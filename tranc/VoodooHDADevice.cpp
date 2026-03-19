@@ -606,7 +606,15 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 			break;
 		IODelay(100);
 	}
+	IOLog("VoodooHDA DBG: STATESTS=0x%04x RIRBCTL=0x%02x CORBCTL=0x%02x RIRBLBASE=0x%08x\n",
+		(unsigned)readData16(HDAC_STATESTS),
+		(unsigned)readData8(HDAC_RIRBCTL),
+		(unsigned)readData8(HDAC_CORBCTL),
+		(unsigned)readData32(HDAC_RIRBLBASE));
 	IODelay(25000); /* 25ms codec settling — per HDA spec max init time */
+	IOLog("VoodooHDA DBG: after settle: STATESTS=0x%04x RIRBWP=0x%02x\n",
+		(unsigned)readData16(HDAC_STATESTS),
+		(unsigned)readData8(HDAC_RIRBWP));
 
 	// todo: hdac_config_fetch(&mQuirksOn, &mQuirksOff);
 	mQuirksOn = 0;
@@ -1796,6 +1804,13 @@ void VoodooHDADevice::sendCommands(CommandList *commands, nid_t cad)
 				(unsigned)readData16(HDAC_CORBWP), (unsigned)readData16(HDAC_CORBRP),
 				(unsigned)readData8(HDAC_RIRBWP), (unsigned)readData8(HDAC_RIRBSTS),
 				(unsigned)readData32(HDAC_GCTL));
+		/* Dump RIRB memory to detect if response landed in buffer but
+		 * RIRBWP hardware register did not advance (Wellsburg errata?). */
+		RirbResponse *rirbDump = (RirbResponse *) mRirbMem->virtAddr;
+		for (int i = 0; i < 4; i++) {
+			IOLog("VoodooHDA DBG: RIRB[%d] resp=0x%08x resp_ex=0x%08x\n",
+				i, (unsigned)rirbDump[i].response, (unsigned)rirbDump[i].response_ex);
+		}
 	}
 
 	codec->commands = NULL;
