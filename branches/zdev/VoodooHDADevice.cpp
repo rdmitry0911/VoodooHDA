@@ -23,8 +23,14 @@
 
 #define HDAC_REVISION "20120126_0002"
 
-#define LOCK()		lock(__FUNCTION__)
-#define UNLOCK()	unlock(__FUNCTION__)
+/* In Release302 these were no-ops (commented out).  Commit eedae3e re-enabled
+ * them, and every build since then fails on Intel X99/Wellsburg with TIMEOUT
+ * (RIRBWP=0).  The real IOLockLock inside handleInterrupt() adds latency on
+ * the workloop callback path — on Wellsburg the codec response window is so
+ * tight that even this small overhead causes RIRB to never receive data.
+ * Restore the original Release302 behavior: no locking. */
+#define LOCK()		//lock(__FUNCTION__)
+#define UNLOCK()	//unlock(__FUNCTION__)
 
 #define super IOAudioDevice
 OSDefineMetaClassAndStructors(VoodooHDADevice, IOAudioDevice)
