@@ -582,7 +582,13 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	setupWorkloop();
 	enableEventSources();
 
-	LOCK();
+	/* Do NOT hold mLock during CORB/RIRB startup and codec scanning.
+	 * handleInterrupt() also acquires mLock, and on some controllers
+	 * (e.g. Intel Wellsburg/X99 with ALC1150) the interrupt handler
+	 * must be able to run during scanCodecs() to process RIRB responses.
+	 * Holding the lock here blocks handleInterrupt() and causes TIMEOUT.
+	 * There is no concurrent audio activity during driver init, so the
+	 * lock is not needed here. */
 
 //	logMsg("Starting CORB Engine...\n");
 	startCorb();
@@ -617,7 +623,6 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 //	logMsg("Scanning HDA codecs...\n");
 	scanCodecs();
 	enableMsgBuffer(false);
-	UNLOCK();
 	for (int n = 0; n < HDAC_CODEC_MAX; n++) {
 		Codec *codec = mCodecs[n];
 		if (!codec)
