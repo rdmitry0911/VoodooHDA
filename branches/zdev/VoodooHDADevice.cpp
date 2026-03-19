@@ -561,18 +561,11 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	writeData32(HDAC_GCTL, gCtl | HDAC_GCTL_UNSOL);
 	writeData32(HDAC_INTCTL, HDAC_INTCTL_CIE | HDAC_INTCTL_GIE);
 
-	/* Poll STATESTS to confirm at least one codec announced presence after
-	 * CRST deassert, then start scanning immediately (1ms minimum like 3.0.1).
-	 * Do NOT add a large settling delay: some codecs (e.g. ALC1150 on Intel
-	 * Wellsburg/X99) only accept CORB commands within a short window after
-	 * asserting STATESTS (~10-15ms).  A 25ms pre-delay overshoots that window
-	 * and the codec appears silent.  Let sendCommands() retry loop handle
-	 * the timing instead (10 retries × 2ms = 20ms coverage). */
-	for (int wait = 0; wait < 250; wait++) {
-		if (readData16(HDAC_STATESTS) & HDAC_STATESTS_SDIWAKE_MASK)
-			break;
-		IODelay(100);
-	}
+	/* Wait 1ms for codecs to finish their own reset sequence after CRST
+	 * deassert, matching 3.0.1 behavior.  Do NOT poll STATESTS here:
+	 * the polling loop can consume up to 25ms before scanCodecs() runs,
+	 * and ALC1150 on Wellsburg only responds to CORB within a short window
+	 * after asserting STATESTS.  scanCodecs() reads STATESTS itself. */
 	IODelay(1000);
 
 	// todo: hdac_config_fetch(&mQuirksOn, &mQuirksOff);
