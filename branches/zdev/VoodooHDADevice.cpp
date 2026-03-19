@@ -557,16 +557,16 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 
 	/* Wait for codecs to complete their own reset and assert STATESTS.
 	 * The HDA spec allows up to 25ms for codecs to announce presence after
-	 * CRST is deasserted.  Poll instead of sleeping blindly so fast systems
-	 * pay no extra latency.  Some Intel PCH controllers (e.g. Wellsburg on
-	 * X99) require the full 25ms on modern macOS before the codec responds
-	 * to CORB commands even though STATESTS is asserted earlier. */
+	 * CRST is deasserted.  Poll until STATESTS is set, then always wait a
+	 * further 25ms: on some Intel PCH controllers (e.g. Wellsburg/X99) the
+	 * codec asserts STATESTS almost immediately but is not yet ready to
+	 * respond to CORB commands — the 25ms settling delay is required. */
 	for (int wait = 0; wait < 250; wait++) {
 		if (readData16(HDAC_STATESTS) & HDAC_STATESTS_SDIWAKE_MASK)
 			break;
 		IODelay(100);
 	}
-	IODelay(1000);
+	IODelay(25000); /* 25ms codec settling — per HDA spec max init time */
 
 	// todo: hdac_config_fetch(&mQuirksOn, &mQuirksOff);
 	mQuirksOn = 0;
