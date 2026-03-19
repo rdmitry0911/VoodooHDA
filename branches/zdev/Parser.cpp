@@ -4711,6 +4711,33 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 	 //	SwitchHandlerRename(funcGroup, widget->bindAssoc, j, res);
 		}*/
 	}
+	/* Handle HP_OUT pins in standalone associations (hpredir < 0).
+	 * These are skipped by the loop above but still need unsolicited response
+	 * registration and sense initialisation so that switchHandler is called
+	 * at boot and on jack events, allowing HPHN_ENABLE to be managed. */
+	for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
+		Widget *widget = widgetGet(funcGroup, j);
+		if (!widget || (widget->enable == 0) || (widget->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX))
+			continue;
+		if ((HDA_PARAM_PIN_CAP_PRESENCE_DETECT_CAP(widget->pin.cap) == 0) ||
+		    ((HDA_CONFIG_DEFAULTCONF_MISC(widget->pin.config) & 1) != 0))
+			continue;
+		if (assocs[widget->bindAssoc].hpredir >= 0)
+			continue; /* already handled by the loop above */
+		if ((widget->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK) != HDA_CONFIG_DEFAULTCONF_DEVICE_HP_OUT)
+			continue;
+		enable = 1;
+		if (HDA_PARAM_AUDIO_WIDGET_CAP_UNSOL_CAP(widget->params.widgetCap)) {
+			sendCommand(HDA_CMD_SET_UNSOLICITED_RESPONSE(cad, j,
+					HDA_CMD_SET_UNSOLICITED_RESPONSE_ENABLE | HDAC_UNSOLTAG_EVENT_HP), cad);
+		}
+		int res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, j), cad);
+		res = HDA_CMD_GET_PIN_SENSE_PRESENCE_DETECT(res);
+		if (funcGroup->audio.quirks & HDA_QUIRK_SENSEINV)
+			res ^= 1;
+		widget->sense = res;
+		logMsg("Enabling HP standalone output switching at node %d\n", j);
+	}
 	funcGroup->mSwitchEnable = enable;
 /*	if (enable) {
 			//switchHandler(funcGroup, true);

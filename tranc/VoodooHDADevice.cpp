@@ -1914,6 +1914,18 @@ int VoodooHDADevice::rirbFlush()
 	UInt8 rirbWritePtr;
 	int ret;
 
+	/* Acknowledge any pending RIRB interrupt before reading RIRBWP.
+	 * Some controllers (e.g. Intel X99 HDA) do not advance the RIRB write
+	 * pointer until RINTFL is cleared, so polling without clearing it causes
+	 * TIMEOUT even though the codec responded.  When called from the interrupt
+	 * handler the flag is already cleared before rirbFlush() is invoked, so
+	 * this is a no-op in that path. */
+	{
+		UInt8 rirbStatus = readData8(HDAC_RIRBSTS);
+		if (HDA_FLAG_MATCH(rirbStatus, HDAC_RIRBSTS_RINTFL))
+			writeData8(HDAC_RIRBSTS, HDAC_RIRBSTS_RINTFL);
+	}
+
 	rirbBase = (RirbResponse *) mRirbMem->virtAddr;
 	rirbWritePtr = readData8(HDAC_RIRBWP);
 
