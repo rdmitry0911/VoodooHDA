@@ -579,6 +579,19 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	initCorb();
 	initRirb();
 
+	errorMsg("DIAG-INIT: CORB phys=0x%llx (LBASE=0x%08x UBASE=0x%08x) size=%d\n",
+		(unsigned long long)mCorbMem->physAddr,
+		(unsigned)readData32(HDAC_CORBLBASE), (unsigned)readData32(HDAC_CORBUBASE),
+		mCorbSize);
+	errorMsg("DIAG-INIT: RIRB phys=0x%llx (LBASE=0x%08x UBASE=0x%08x) size=%d\n",
+		(unsigned long long)mRirbMem->physAddr,
+		(unsigned)readData32(HDAC_RIRBLBASE), (unsigned)readData32(HDAC_RIRBUBASE),
+		mRirbSize);
+	errorMsg("DIAG-INIT: GCAP=0x%04x 64BIT=%d CORBCTL=0x%02x RIRBCTL=0x%02x STATESTS=0x%04x\n",
+		(unsigned)readData16(HDAC_GCAP), (int)mSupports64Bit,
+		(unsigned)readData8(HDAC_CORBCTL), (unsigned)readData8(HDAC_RIRBCTL),
+		(unsigned)readData16(HDAC_STATESTS));
+
 	setupWorkloop();
 	enableEventSources();
 
@@ -595,6 +608,11 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 // logMsg("Starting RIRB Engine...\n");
 	startRirb();
 
+	errorMsg("DIAG-START: CORBCTL=0x%02x RIRBCTL=0x%02x CORBWP=%u CORBRP=%u RIRBWP=%u STATESTS=0x%04x\n",
+		(unsigned)readData8(HDAC_CORBCTL), (unsigned)readData8(HDAC_RIRBCTL),
+		(unsigned)readData16(HDAC_CORBWP), (unsigned)readData16(HDAC_CORBRP),
+		(unsigned)readData8(HDAC_RIRBWP), (unsigned)readData16(HDAC_STATESTS));
+
 	logMsg("Enabling controller interrupt...\n");
 	gCtl = readData32(HDAC_GCTL);
 	logMsg("HDAC_CTL=0x%04x\n", gCtl);
@@ -607,6 +625,10 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	 * and ALC1150 on Wellsburg only responds to CORB within a short window
 	 * after asserting STATESTS.  scanCodecs() reads STATESTS itself. */
 	IODelay(1000);
+
+	errorMsg("DIAG-PRE-SCAN: CORBWP=%u CORBRP=%u RIRBWP=%u STATESTS=0x%04x\n",
+		(unsigned)readData16(HDAC_CORBWP), (unsigned)readData16(HDAC_CORBRP),
+		(unsigned)readData8(HDAC_RIRBWP), (unsigned)readData16(HDAC_STATESTS));
 
 	// todo: hdac_config_fetch(&mQuirksOn, &mQuirksOff);
 	mQuirksOn = 0;
@@ -1800,6 +1822,21 @@ void VoodooHDADevice::sendCommands(CommandList *commands, nid_t cad)
 				(unsigned)readData16(HDAC_CORBWP), (unsigned)readData16(HDAC_CORBRP),
 				(unsigned)readData8(HDAC_RIRBWP), (unsigned)readData8(HDAC_RIRBSTS),
 				(unsigned)readData32(HDAC_GCTL));
+		/* Extended wait: poll for up to 2 seconds to see if RIRBWP ever advances.
+		 * This determines whether the codec responds eventually (timing issue)
+		 * or never responds at all (structural DMA/config issue). */
+		for (int wait = 0; wait < 2000; wait++) {
+			IODelay(1000);
+			UInt8 wp = readData8(HDAC_RIRBWP);
+			if (wp != 0) {
+				errorMsg("TIMEOUT extended: RIRBWP advanced to %u after %d ms!\n", (unsigned)wp, wait+1);
+				break;
+			}
+			if (wait == 99 || wait == 499 || wait == 999 || wait == 1999)
+				errorMsg("TIMEOUT extended: still RIRBWP=0 after %d ms, CORBWP=%u CORBRP=%u RIRBSTS=0x%02x\n",
+					wait+1, (unsigned)readData16(HDAC_CORBWP),
+					(unsigned)readData16(HDAC_CORBRP), (unsigned)readData8(HDAC_RIRBSTS));
+		}
 	}
 
 	codec->commands = NULL;
