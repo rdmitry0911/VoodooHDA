@@ -594,6 +594,18 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	logMsg("HDAC_CTL=0x%04x\n", gCtl);
 	writeData32(HDAC_GCTL, gCtl | HDAC_GCTL_UNSOL);
 	writeData32(HDAC_INTCTL, HDAC_INTCTL_CIE | HDAC_INTCTL_GIE);
+
+	/* Wait for codecs to complete their own reset and assert STATESTS.
+	 * The HDA spec allows up to 25ms for codecs to announce presence after
+	 * CRST is deasserted.  Poll instead of sleeping blindly so fast systems
+	 * pay no extra latency.  Some Intel PCH controllers (e.g. Wellsburg on
+	 * X99) require the full 25ms on modern macOS before the codec responds
+	 * to CORB commands even though STATESTS is asserted earlier. */
+	for (int wait = 0; wait < 250; wait++) {
+		if (readData16(HDAC_STATESTS) & HDAC_STATESTS_SDIWAKE_MASK)
+			break;
+		IODelay(100);
+	}
 	IODelay(1000);
 
 	// todo: hdac_config_fetch(&mQuirksOn, &mQuirksOff);
