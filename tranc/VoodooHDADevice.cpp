@@ -1777,9 +1777,14 @@ void VoodooHDADevice::sendCommands(CommandList *commands, nid_t cad)
 	} while (((codec->numVerbsSent != commands->numCommands) ||
 			(codec->numRespReceived != commands->numCommands)) && --retry);
 
-	if (retry == 0)
+	if (retry == 0) {
 		errorMsg("TIMEOUT numcmd=%d, sent=%d, received=%d\n", commands->numCommands,
 				codec->numVerbsSent, codec->numRespReceived);
+		errorMsg("TIMEOUT diag: CORBWP=%u CORBRP=%u RIRBWP=%u RIRBSTS=0x%02x GCTL=0x%08x\n",
+				(unsigned)readData16(HDAC_CORBWP), (unsigned)readData16(HDAC_CORBRP),
+				(unsigned)readData8(HDAC_RIRBWP), (unsigned)readData8(HDAC_RIRBSTS),
+				(unsigned)readData32(HDAC_GCTL));
+	}
 
 	codec->commands = NULL;
 	codec->numRespReceived = 0;
