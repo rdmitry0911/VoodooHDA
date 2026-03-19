@@ -595,18 +595,19 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	writeData32(HDAC_GCTL, gCtl | HDAC_GCTL_UNSOL);
 	writeData32(HDAC_INTCTL, HDAC_INTCTL_CIE | HDAC_INTCTL_GIE);
 
-	/* Wait for codecs to complete their own reset and assert STATESTS.
-	 * The HDA spec allows up to 25ms for codecs to announce presence after
-	 * CRST is deasserted.  Poll until STATESTS is set, then always wait a
-	 * further 25ms: on some Intel PCH controllers (e.g. Wellsburg/X99) the
-	 * codec asserts STATESTS almost immediately but is not yet ready to
-	 * respond to CORB commands — the 25ms settling delay is required. */
+	/* Poll STATESTS to confirm at least one codec announced presence after
+	 * CRST deassert, then start scanning immediately (1ms minimum like 3.0.1).
+	 * Do NOT add a large settling delay: some codecs (e.g. ALC1150 on Intel
+	 * Wellsburg/X99) only accept CORB commands within a short window after
+	 * asserting STATESTS (~10-15ms).  A 25ms pre-delay overshoots that window
+	 * and the codec appears silent.  Let sendCommands() retry loop handle
+	 * the timing instead (10 retries × 2ms = 20ms coverage). */
 	for (int wait = 0; wait < 250; wait++) {
 		if (readData16(HDAC_STATESTS) & HDAC_STATESTS_SDIWAKE_MASK)
 			break;
 		IODelay(100);
 	}
-	IODelay(25000); /* 25ms codec settling — per HDA spec max init time */
+	IODelay(1000);
 
 	// todo: hdac_config_fetch(&mQuirksOn, &mQuirksOff);
 	mQuirksOn = 0;
