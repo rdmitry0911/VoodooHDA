@@ -4739,12 +4739,9 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 		logMsg("Enabling HP standalone output switching at node %d\n", j);
 	}
 	funcGroup->mSwitchEnable = enable;
-/*	if (enable) {
-			//switchHandler(funcGroup, true);
-
-		if (poll)
-			errorMsg("XXX\nXXX: poll based jack detection unimplemented\nXXX\n");
-	}*/
+	if (enable) {
+		switchHandler(funcGroup, true);
+	}
 }
 
 //Slice
