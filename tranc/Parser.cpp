@@ -4866,6 +4866,75 @@ void VoodooHDADevice::switchHandler(FunctionGroup *funcGroup, bool first)
 		}
 		assocs[assocNum].dirty |= res;
 	}
+	/* S/PDIF fallback: if no analog output pin detects presence, mute all
+	 * analog outputs so that S/PDIF becomes the only active output.
+	 * When any analog jack is later inserted, the unsolicited handler will
+	 * unmute it normally. */
+	{
+		bool anyAnalogPresent = false;
+		/* Check all analog output pins with presence detection capability. */
+		for (int nid = funcGroup->startNode; nid < funcGroup->endNode; nid++) {
+			widget = widgetGet(funcGroup, nid);
+			if (!widget || (widget->enable == 0) ||
+			    (widget->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX))
+				continue;
+			int a = widget->bindAssoc;
+			if (a < 0 || a >= funcGroup->audio.numAssocs)
+				continue;
+			if (assocs[a].dir != HDA_CTL_OUT)
+				continue;
+			/* Skip digital (S/PDIF, HDMI) outputs. */
+			UInt32 devType = widget->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK;
+			if (devType == HDA_CONFIG_DEFAULTCONF_DEVICE_SPDIF_OUT ||
+			    devType == HDA_CONFIG_DEFAULTCONF_DEVICE_DIGITAL_OTHER_OUT)
+				continue;
+			if (HDA_PARAM_PIN_CAP_PRESENCE_DETECT_CAP(widget->pin.cap) == 0)
+				continue;
+			if ((HDA_CONFIG_DEFAULTCONF_MISC(widget->pin.config) & 1) != 0)
+				continue;
+			res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, nid), cad);
+			res = HDA_CMD_GET_PIN_SENSE_PRESENCE_DETECT(res);
+			if (funcGroup->audio.quirks & HDA_QUIRK_SENSEINV)
+				res ^= 1;
+			if (res) {
+				anyAnalogPresent = true;
+				break;
+			}
+		}
+		if (!anyAnalogPresent) {
+			logMsg("No analog output jack detected — muting analog, S/PDIF remains active\n");
+			for (int nid = funcGroup->startNode; nid < funcGroup->endNode; nid++) {
+				widget = widgetGet(funcGroup, nid);
+				if (!widget || (widget->enable == 0) ||
+				    (widget->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX))
+					continue;
+				int a = widget->bindAssoc;
+				if (a < 0 || a >= funcGroup->audio.numAssocs)
+					continue;
+				if (assocs[a].dir != HDA_CTL_OUT)
+					continue;
+				UInt32 devType = widget->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK;
+				if (devType == HDA_CONFIG_DEFAULTCONF_DEVICE_SPDIF_OUT ||
+				    devType == HDA_CONFIG_DEFAULTCONF_DEVICE_DIGITAL_OTHER_OUT)
+					continue;
+				/* Disable analog output pin. */
+				UInt32 val = widget->pin.ctrl &
+					~(HDA_CMD_SET_PIN_WIDGET_CTRL_OUT_ENABLE |
+					  HDA_CMD_SET_PIN_WIDGET_CTRL_HPHN_ENABLE);
+				if (val != widget->pin.ctrl) {
+					widget->pin.ctrl = val;
+					sendCommand(HDA_CMD_SET_PIN_WIDGET_CTRL(cad, nid, widget->pin.ctrl), cad);
+				}
+				/* Mute the pin's output amplifier if available. */
+				AudioControl *ctl = audioCtlAmpGet(funcGroup, nid, HDA_CTL_IN, -1, 1);
+				if (ctl && ctl->mute && !ctl->forcemute) {
+					ctl->forcemute = 1;
+					audioCtlAmpSet(ctl, HDA_AMP_MUTE_DEFAULT,
+						       HDA_AMP_VOL_DEFAULT, HDA_AMP_VOL_DEFAULT);
+				}
+			}
+		}
+	}
 }
 
 /*
