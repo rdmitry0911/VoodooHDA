@@ -4737,6 +4737,18 @@ void VoodooHDADevice::hpSwitchHandler(FunctionGroup *funcGroup, int nid, UInt32 
 				sendCommand(HDA_CMD_SET_PIN_WIDGET_CTRL(cad, widget->nid, widget->pin.ctrl), cad);
 			}
 		}
+		/* Also handle output amp of pins in the same association.
+		 * On ALC256 the speaker pin (nid 20) has a mute-only output amp
+		 * that is initialized muted; without this, speakers stay silent
+		 * even when headphones are unplugged. */
+		control = audioCtlAmpGet(funcGroup, pin, HDA_CTL_OUT, -1, 1);
+		if (control && control->mute) {
+			val = (res != 0) ? 1 : 0;
+			if (val != (UInt32) control->forcemute) {
+				control->forcemute = val;
+				audioCtlAmpSet(control, HDA_AMP_MUTE_DEFAULT, HDA_AMP_VOL_DEFAULT, HDA_AMP_VOL_DEFAULT);
+			}
+		}
 	}
 	/* (Un)Mute output pins from other associations (e.g. external speakers).
 	 * Only triggered by a genuine HP_OUT pin to avoid falsely muting speakers
