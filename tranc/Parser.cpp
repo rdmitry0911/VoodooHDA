@@ -2830,6 +2830,112 @@ void VoodooHDADevice::adjustPinAssociationsForSwitching(FunctionGroup *funcGroup
 		}
 	}
 
+	/* Generic single-DAC merge: on 2-channel codecs (ALC2xx etc.) only one
+	 * DAC actually works.  If all output pins can reach the same single DAC,
+	 * merge all output associations into one so they share it via switching.
+	 * This must run after the HP-into-Speaker merge above. */
+	{
+		/* Collect all enabled output pins and their reachable DACs. */
+		nid_t commonDAC = 0;
+		bool singleDAC = true;
+		Widget *primaryOutPin = NULL; /* pin in the lowest-numbered assoc */
+		UInt32 primaryAssoc = 16;
+
+		for (int i = funcGroup->startNode; i < funcGroup->endNode; i++) {
+			Widget *w = widgetGet(funcGroup, i);
+			if (!w || !w->enable)
+				continue;
+			if (w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+				continue;
+			UInt32 type = w->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK;
+			UInt32 conn = (w->pin.config >> 30) & 0x3;
+			if (conn == 1) /* N/C */
+				continue;
+			/* Only output pin types */
+			if (type != HDA_CONFIG_DEFAULTCONF_DEVICE_LINE_OUT &&
+				type != HDA_CONFIG_DEFAULTCONF_DEVICE_SPEAKER &&
+				type != HDA_CONFIG_DEFAULTCONF_DEVICE_HP_OUT)
+				continue;
+			UInt32 assoc = HDA_CONFIG_DEFAULTCONF_ASSOCIATION(w->pin.config);
+			if (assoc == 0 || assoc == 15)
+				continue;
+
+			/* Find DACs this pin can reach (direct connections to audio output) */
+			nid_t pinDAC = 0;
+			int dacCount = 0;
+			for (int c = 0; c < w->nconns; c++) {
+				Widget *cw = widgetGet(funcGroup, w->conns[c]);
+				if (cw && cw->enable &&
+					cw->type == HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_AUDIO_OUTPUT) {
+					if (dacCount == 0)
+						pinDAC = cw->nid;
+					dacCount++;
+				}
+			}
+			if (dacCount == 0) {
+				singleDAC = false;
+				break;
+			}
+			if (commonDAC == 0) {
+				commonDAC = pinDAC;
+			} else if (pinDAC != commonDAC) {
+				/* Multiple pins have different primary DACs — check if they
+				 * all share a common one (pin may have multiple connections) */
+				bool hasCommon = false;
+				for (int c = 0; c < w->nconns; c++) {
+					Widget *cw = widgetGet(funcGroup, w->conns[c]);
+					if (cw && cw->enable &&
+						cw->type == HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_AUDIO_OUTPUT &&
+						cw->nid == commonDAC) {
+						hasCommon = true;
+						break;
+					}
+				}
+				if (!hasCommon) {
+					singleDAC = false;
+					break;
+				}
+			}
+			/* Track primary output association (lowest assoc number) */
+			if (assoc < primaryAssoc) {
+				primaryAssoc = assoc;
+				primaryOutPin = w;
+			}
+		}
+
+		/* Merge all output pins into the primary association */
+		if (singleDAC && commonDAC != 0 && primaryOutPin) {
+			UInt32 nextSeq = HDA_CONFIG_DEFAULTCONF_SEQUENCE(primaryOutPin->pin.config) + 1;
+			for (int i = funcGroup->startNode; i < funcGroup->endNode; i++) {
+				Widget *w = widgetGet(funcGroup, i);
+				if (!w || !w->enable || w == primaryOutPin)
+					continue;
+				if (w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+					continue;
+				UInt32 type = w->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK;
+				UInt32 conn = (w->pin.config >> 30) & 0x3;
+				if (conn == 1)
+					continue;
+				if (type != HDA_CONFIG_DEFAULTCONF_DEVICE_LINE_OUT &&
+					type != HDA_CONFIG_DEFAULTCONF_DEVICE_SPEAKER &&
+					type != HDA_CONFIG_DEFAULTCONF_DEVICE_HP_OUT)
+					continue;
+				UInt32 assoc = HDA_CONFIG_DEFAULTCONF_ASSOCIATION(w->pin.config);
+				if (assoc == 0 || assoc == 15 || assoc == primaryAssoc)
+					continue;
+
+				if (nextSeq > 15) nextSeq = 15;
+				w->pin.config &= ~(HDA_CONFIG_DEFAULTCONF_ASSOCIATION_MASK |
+						HDA_CONFIG_DEFAULTCONF_SEQUENCE_MASK);
+				w->pin.config |= (primaryAssoc << HDA_CONFIG_DEFAULTCONF_ASSOCIATION_SHIFT) |
+						(nextSeq << HDA_CONFIG_DEFAULTCONF_SEQUENCE_SHIFT);
+				dumpMsg("Single-DAC merge: moved output nid=%d into association %d seq=%d (common DAC=%d)\n",
+						w->nid, (int)primaryAssoc, (int)nextSeq, (int)commonDAC);
+				nextSeq++;
+			}
+		}
+	}
+
 	/* Merge External Mic into Internal Mic's association if they differ */
 	if (extMicWidget && intMicWidget) {
 		UInt32 extAssoc = HDA_CONFIG_DEFAULTCONF_ASSOCIATION(extMicWidget->pin.config);
