@@ -254,7 +254,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CURRENT_PROJECT_VERSION = 1.2.2;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEPLOYMENT_POSTPROCESSING = YES;
+				DEPLOYMENT_POSTPROCESSING = NO;
 				DYLIB_COMPATIBILITY_VERSION = "$(CURRENT_PROJECT_VERSION)";
 				DYLIB_CURRENT_VERSION = "$(CURRENT_PROJECT_VERSION)";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -280,7 +280,7 @@
 					"-ftree-vectorize",
 					"-fno-stack-protector",
 				);
-				OTHER_LDFLAGS = "-Wl,-no_source_version,-no_function_starts,-no_data_in_code_info,-no_version_load_command,-no_dependent_dr_info";
+				OTHER_LDFLAGS = "-Wl,-no_source_version,-no_function_starts,-no_data_in_code_info";
 				SDKROOT = macosx;
 				STRIPFLAGS = "-no_uuid";
 			};
