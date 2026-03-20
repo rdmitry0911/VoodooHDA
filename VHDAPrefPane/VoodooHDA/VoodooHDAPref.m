@@ -698,6 +698,86 @@ void disableViewRecursive(NSView* view)
 	}
 }
 
+- (void) adjustLayout
+{
+	NSView *mainView = [self mainView];
+	CGFloat viewWidth = NSWidth(mainView.frame);
+	CGFloat margin = 0.0;
+	CGFloat boxWidth = viewWidth - 2 * margin;
+	CGFloat designBoxWidth = 610.0;
+	CGFloat delta = boxWidth - designBoxWidth;
+
+	for (NSView *subview in mainView.subviews) {
+		NSRect f = subview.frame;
+		if ([subview isKindOfClass:[NSBox class]]) {
+			f.origin.x = margin;
+			f.size.width = boxWidth;
+			subview.frame = f;
+			/* Adjust children inside box */
+			NSView *content = [(NSBox *)subview contentView];
+			CGFloat contentWidth = NSWidth(content.frame);
+			CGFloat rightPad = 10.0;
+			CGFloat midpoint = designBoxWidth / 2.0;
+			for (NSView *child in content.subviews) {
+				NSRect cf = child.frame;
+				/* Skip small "0" indicator labels — position them later */
+				if ([child isKindOfClass:[NSTextField class]] && cf.size.width < 30)
+					continue;
+				if (cf.origin.x > midpoint) {
+					/* Right-side element: shift */
+					cf.origin.x += delta;
+				} else if (cf.origin.x + cf.size.width > midpoint + 50) {
+					/* Wide element spanning most of width: stretch */
+					cf.size.width += delta;
+				}
+				/* Clamp right edge so controls don't touch the border */
+				CGFloat rightEdge = cf.origin.x + cf.size.width;
+				if (rightEdge > contentWidth - rightPad) {
+					cf.size.width = contentWidth - rightPad - cf.origin.x;
+				}
+				child.frame = cf;
+			}
+			/* Position "0" indicator labels at the zero point of their slider */
+			for (NSView *child in content.subviews) {
+				if (![child isKindOfClass:[NSTextField class]]) continue;
+				NSRect cf = child.frame;
+				if (cf.size.width >= 30) continue;
+				for (NSView *other in content.subviews) {
+					if (![other isKindOfClass:[NSSlider class]]) continue;
+					NSRect sf = other.frame;
+					if (fabs(sf.origin.y - cf.origin.y) > 30) continue;
+					/* Found the associated slider — compute zero position */
+					NSSlider *slider = (NSSlider *)other;
+					double minVal = slider.minValue;
+					double maxVal = slider.maxValue;
+					double zeroFrac = (0.0 - minVal) / (maxVal - minVal);
+					CGFloat knob = slider.knobThickness;
+					CGFloat trackStart = sf.origin.x + knob / 2.0;
+					CGFloat trackLen = sf.size.width - knob;
+					cf.origin.x = trackStart + trackLen * zeroFrac - cf.size.width / 2.0 + 3.0;
+					child.frame = cf;
+					break;
+				}
+			}
+		} else if (f.size.width > 400) {
+			/* Full-width text field (title, version) */
+			f.origin.x = margin;
+			f.size.width = boxWidth;
+			subview.frame = f;
+		} else if (f.origin.x > viewWidth * 0.5) {
+			/* Right-side control (Volume label, knob) */
+			f.origin.x += delta;
+			subview.frame = f;
+		}
+	}
+}
+
+- (void) didSelect
+{
+	[super didSelect];
+	[self adjustLayout];
+}
+
 - (void) willSelect
 {
 	[super willSelect];
