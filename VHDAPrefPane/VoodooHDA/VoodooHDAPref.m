@@ -702,7 +702,10 @@ void disableViewRecursive(NSView* view)
 {
 	NSView *mainView = [self mainView];
 	CGFloat viewWidth = NSWidth(mainView.frame);
-	CGFloat margin = 0.0;
+	/* On Tahoe (System Settings) the view is ~640 and the host adds its own
+	 * padding, so we use margin=0.  On Sequoia and older (System Preferences)
+	 * the view is wider and has no host padding, so we add our own margin. */
+	CGFloat margin = (viewWidth > 650) ? 15.0 : 0.0;
 	CGFloat boxWidth = viewWidth - 2 * margin;
 	CGFloat designBoxWidth = 610.0;
 	CGFloat delta = boxWidth - designBoxWidth;
