@@ -56,11 +56,11 @@
             <value key="minSize" type="size" width="224.66399999999999" height="10"/>
             <view key="contentView" id="6">
                 <rect key="frame" x="0.0" y="0.0" width="640" height="540"/>
-                <autoresizingMask key="autoresizingMask"/>
+                <autoresizingMask key="autoresizingMask" widthSizable="YES"/>
                 <subviews>
                     <!-- Title "VoodooHDA" -->
                     <textField focusRingType="none" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="108">
-                        <rect key="frame" x="15" y="518" width="610" height="17"/>
+                        <rect key="frame" x="0" y="518" width="600" height="17"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
                         <textFieldCell key="cell" scrollable="YES" lineBreakMode="clipping" sendsActionOnEndEditing="YES" alignment="center" title="VoodooHDA" id="109">
                             <font key="font" metaFont="system"/>
@@ -70,7 +70,7 @@
                     </textField>
                     <!-- Version/device info text -->
                     <textField focusRingType="none" verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="100">
-                        <rect key="frame" x="15" y="470" width="610" height="48"/>
+                        <rect key="frame" x="0" y="470" width="600" height="48"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
                         <textFieldCell key="cell" controlSize="small" scrollable="YES" lineBreakMode="clipping" sendsActionOnEndEditing="YES" alignment="center" title="Label" id="101">
                             <font key="font" metaFont="smallSystem"/>
@@ -144,10 +144,10 @@
                     </slider>
                     <!-- Mixer Controls box -->
                     <box fixedFrame="YES" borderType="line" title="Mixer Controls" translatesAutoresizingMaskIntoConstraints="NO" id="213">
-                        <rect key="frame" x="15" y="148" width="610" height="275"/>
+                        <rect key="frame" x="0" y="148" width="600" height="275"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
                         <view key="contentView" id="dGy-bN-O0r">
-                            <rect key="frame" x="0.0" y="0.0" width="610" height="263"/>
+                            <rect key="frame" x="0.0" y="0.0" width="600" height="263"/>
                             <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                             <subviews>
                                 <!-- Left column sliders -->
@@ -615,10 +615,10 @@
                     </box>
                     <!-- Sound treatment box -->
                     <box fixedFrame="YES" borderType="line" title="Sound treatment" translatesAutoresizingMaskIntoConstraints="NO" id="303">
-                        <rect key="frame" x="15" y="16" width="610" height="128"/>
+                        <rect key="frame" x="0" y="16" width="600" height="128"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
                         <view key="contentView" id="GVO-Y9-db2">
-                            <rect key="frame" x="0.0" y="0.0" width="610" height="116"/>
+                            <rect key="frame" x="0.0" y="0.0" width="600" height="116"/>
                             <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                             <subviews>
                                 <slider verticalHuggingPriority="750" fixedFrame="YES" translatesAutoresizingMaskIntoConstraints="NO" id="308">

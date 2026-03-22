@@ -9,8 +9,49 @@
 // Modded by Zenith432 2013 - Support systems with multiple HDA controllers
 
 #import "VoodooHDAPref.h"
+#import <CoreGraphics/CoreGraphics.h>
 
 @implementation VoodooHDAPref
+
+static CGFloat detectContentAreaWidth(void) {
+	NSArray *apps = [NSRunningApplication
+		runningApplicationsWithBundleIdentifier:@"com.apple.systempreferences"];
+	if (apps.count == 0) return 0.0;
+	pid_t ssPID = [(NSRunningApplication *)apps[0] processIdentifier];
+	pid_t myPID = getpid();
+
+	CFArrayRef windowList = CGWindowListCopyWindowInfo(
+		kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+		kCGNullWindowID);
+	if (!windowList) return 0.0;
+
+	CGRect ssRect = CGRectZero, xpcRect = CGRectZero;
+	BOOL foundSS = NO, foundXPC = NO;
+
+	for (CFIndex i = 0; i < CFArrayGetCount(windowList); i++) {
+		NSDictionary *info = (NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
+		pid_t pid = [[info objectForKey:(id)kCGWindowOwnerPID] intValue];
+		int layer = [[info objectForKey:(id)kCGWindowLayer] intValue];
+		if (layer != 0) continue;
+
+		CGRect bounds;
+		NSDictionary *boundsDict = [info objectForKey:(id)kCGWindowBounds];
+		CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)boundsDict, &bounds);
+
+		if (pid == ssPID && (!foundSS || bounds.size.width > ssRect.size.width)) {
+			ssRect = bounds; foundSS = YES;
+		}
+		if (pid == myPID && (!foundXPC || bounds.size.width > xpcRect.size.width)) {
+			xpcRect = bounds; foundXPC = YES;
+		}
+	}
+	CFRelease(windowList);
+
+	if (!foundSS || !foundXPC) return 0.0;
+	CGFloat contentWidth = (ssRect.origin.x + ssRect.size.width) - xpcRect.origin.x;
+	if (contentWidth < 300 || contentWidth > 1200) return 0.0;
+	return contentWidth;
+}
 
 static
 NSArray* getServices()
@@ -435,6 +476,21 @@ NSString* trimIORegistryPathForDisplay(NSString* path)
 - (void) mainViewDidLoad
 {
 	[super mainViewDidLoad];
+	NSView *mv = [self mainView];
+	/* Save XIB dimensions before any layout changes — these are read from
+	   the actual XIB at load time, not hardcoded. */
+	initialViewWidth = NSWidth(mv.frame);
+	for (NSView *sub in mv.subviews) {
+		if ([sub isKindOfClass:[NSBox class]]) {
+			designBoxWidth = NSWidth(sub.frame);
+			break;
+		}
+	}
+	mv.postsFrameChangedNotifications = YES;
+	[[NSNotificationCenter defaultCenter] addObserver:self
+											 selector:@selector(mainViewFrameChanged:)
+												 name:NSViewFrameDidChangeNotification
+											   object:mv];
 	services = getServices();
 	if (services.count > 0U)
 		currentService = 0;
@@ -702,12 +758,45 @@ void disableViewRecursive(NSView* view)
 {
 	NSView *mainView = [self mainView];
 	CGFloat viewWidth = NSWidth(mainView.frame);
-	/* On Tahoe (System Settings) the view is ~640 and the host adds its own
-	 * padding, so we use margin=0.  On Sequoia and older (System Preferences)
-	 * the view is wider and has no host padding, so we add our own margin. */
-	CGFloat margin = (viewWidth > 650) ? 15.0 : 0.0;
+
+	if (viewWidth <= initialViewWidth) {
+		/* Tahoe: host didn't resize us — detect real content area via
+		   CGWindowList and resize view+window to fill it. */
+		if (detectedContentWidth <= 0.0)
+			detectedContentWidth = detectContentAreaWidth();
+
+		if (detectedContentWidth > 0.0) {
+			/* Resize view and window to actual content area width */
+			NSRect vf = mainView.frame;
+			vf.size.width = detectedContentWidth;
+			mainView.frame = vf;
+			NSWindow *win = mainView.window;
+			if (win) {
+				NSRect wf = win.frame;
+				wf.size.width = detectedContentWidth;
+				[win setFrame:wf display:YES];
+			}
+			viewWidth = detectedContentWidth;
+			/* Fall through to stretch logic below */
+		} else {
+			/* Fallback: use design width (functional but not perfectly margined) */
+			NSRect vf = mainView.frame;
+			vf.size.width = designBoxWidth;
+			mainView.frame = vf;
+
+			NSWindow *win = mainView.window;
+			if (win) {
+				NSRect wf = win.frame;
+				wf.size.width = designBoxWidth;
+				[win setFrame:wf display:YES];
+			}
+			return;
+		}
+	}
+
+	/* Sequoia: host gave us more space — add margins and stretch. */
+	CGFloat margin = 15.0;
 	CGFloat boxWidth = viewWidth - 2 * margin;
-	CGFloat designBoxWidth = 610.0;
 	CGFloat delta = boxWidth - designBoxWidth;
 
 	for (NSView *subview in mainView.subviews) {
@@ -716,9 +805,13 @@ void disableViewRecursive(NSView* view)
 			f.origin.x = margin;
 			f.size.width = boxWidth;
 			subview.frame = f;
-			/* Adjust children inside box */
+			/* Force contentView to match new box size */
 			NSView *content = [(NSBox *)subview contentView];
-			CGFloat contentWidth = NSWidth(content.frame);
+			NSSize contentMargins = [(NSBox *)subview contentViewMargins];
+			NSRect cr = content.frame;
+			cr.size.width = boxWidth - 2 * contentMargins.width - 2;
+			content.frame = cr;
+			CGFloat contentWidth = cr.size.width;
 			CGFloat rightPad = 10.0;
 			CGFloat midpoint = designBoxWidth / 2.0;
 			for (NSView *child in content.subviews) {
@@ -775,9 +868,70 @@ void disableViewRecursive(NSView* view)
 	}
 }
 
+- (void) mainViewFrameChanged:(NSNotification *)note
+{
+	[self adjustLayout];
+}
+
 - (void) didSelect
 {
 	[super didSelect];
+
+	/* --- Temporary diagnostic: verify CGWindowList data from XPC --- */
+	{
+		NSArray *apps = [NSRunningApplication
+			runningApplicationsWithBundleIdentifier:@"com.apple.systempreferences"];
+		pid_t ssPID = apps.count > 0 ? [(NSRunningApplication *)apps[0] processIdentifier] : 0;
+		pid_t myPID = getpid();
+
+		CFArrayRef windowList = CGWindowListCopyWindowInfo(
+			kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+			kCGNullWindowID);
+
+		NSMutableString *diag = [NSMutableString stringWithFormat:
+			@"SS PID: %d  XPC PID: %d\n", ssPID, myPID];
+
+		CGRect ssRect = CGRectZero, xpcRect = CGRectZero;
+		BOOL foundSS = NO, foundXPC = NO;
+
+		if (windowList) {
+			for (CFIndex i = 0; i < CFArrayGetCount(windowList); i++) {
+				NSDictionary *info = (NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
+				pid_t pid = [[info objectForKey:(id)kCGWindowOwnerPID] intValue];
+				int layer = [[info objectForKey:(id)kCGWindowLayer] intValue];
+				if (layer != 0) continue;
+
+				CGRect bounds;
+				NSDictionary *boundsDict = [info objectForKey:(id)kCGWindowBounds];
+				CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)boundsDict, &bounds);
+
+				if (pid == ssPID && (!foundSS || bounds.size.width > ssRect.size.width)) {
+					ssRect = bounds; foundSS = YES;
+				}
+				if (pid == myPID && (!foundXPC || bounds.size.width > xpcRect.size.width)) {
+					xpcRect = bounds; foundXPC = YES;
+				}
+			}
+			CFRelease(windowList);
+		}
+
+		[diag appendFormat:@"SS window: %@ x=%.0f w=%.0f\n",
+			foundSS ? @"found" : @"NOT FOUND", ssRect.origin.x, ssRect.size.width];
+		[diag appendFormat:@"XPC window: %@ x=%.0f w=%.0f\n",
+			foundXPC ? @"found" : @"NOT FOUND", xpcRect.origin.x, xpcRect.size.width];
+
+		CGFloat computed = 0;
+		if (foundSS && foundXPC)
+			computed = (ssRect.origin.x + ssRect.size.width) - xpcRect.origin.x;
+		[diag appendFormat:@"Computed content width: %.0f", computed];
+
+		NSAlert *alert = [[NSAlert alloc] init];
+		[alert setMessageText:@"CGWindowList Diagnostic"];
+		[alert setInformativeText:diag];
+		[alert runModal];
+	}
+	/* --- End diagnostic --- */
+
 	[self adjustLayout];
 }
 
@@ -809,6 +963,7 @@ failure:
 
 - (void) dealloc
 {
+	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	if (chInfo) {
 		free(chInfo);
 		chInfo = 0;
