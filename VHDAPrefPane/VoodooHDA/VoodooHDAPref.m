@@ -9,46 +9,42 @@
 // Modded by Zenith432 2013 - Support systems with multiple HDA controllers
 
 #import "VoodooHDAPref.h"
-#import <CoreGraphics/CoreGraphics.h>
 
 @implementation VoodooHDAPref
 
+/* Query content area width via osascript (Accessibility API).
+   Spawns osascript as a child process to walk the System Settings
+   AX tree: Window → SplitGroup → rightmost Group → size. */
 static CGFloat detectContentAreaWidth(void) {
-	NSArray *apps = [NSRunningApplication
-		runningApplicationsWithBundleIdentifier:@"com.apple.systempreferences"];
-	if (apps.count == 0) return 0.0;
-	pid_t ssPID = [(NSRunningApplication *)apps[0] processIdentifier];
-	pid_t myPID = getpid();
+	NSTask *task = [[NSTask alloc] init];
+	task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/osascript"];
+	task.arguments = @[
+		@"-l", @"JavaScript", @"-e",
+		@"var se=Application('System Events');"
+		@"var p=se.processes.byName('System Settings');"
+		@"var sg=p.windows[0].groups[0].splitterGroups[0];"
+		@"var gs=sg.groups();"
+		@"var maxX=-1,w=0;"
+		@"for(var i=0;i<gs.length;i++){"
+		@"  var pos=gs[i].position();"
+		@"  if(pos[0]>maxX){maxX=pos[0];w=gs[i].size()[0]}"
+		@"}"
+		@"w"
+	];
+	NSPipe *pipe = [NSPipe pipe];
+	task.standardOutput = pipe;
+	task.standardError = [NSPipe pipe];
 
-	CFArrayRef windowList = CGWindowListCopyWindowInfo(
-		kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-		kCGNullWindowID);
-	if (!windowList) return 0.0;
+	NSError *err = nil;
+	if (![task launchAndReturnError:&err]) return 0.0;
+	[task waitUntilExit];
 
-	CGRect ssRect = CGRectZero, xpcRect = CGRectZero;
-	BOOL foundSS = NO, foundXPC = NO;
+	if (task.terminationStatus != 0) return 0.0;
 
-	for (CFIndex i = 0; i < CFArrayGetCount(windowList); i++) {
-		NSDictionary *info = (NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
-		pid_t pid = [[info objectForKey:(id)kCGWindowOwnerPID] intValue];
-		int layer = [[info objectForKey:(id)kCGWindowLayer] intValue];
-		if (layer != 0) continue;
+	NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
+	NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+	CGFloat contentWidth = [output doubleValue];
 
-		CGRect bounds;
-		NSDictionary *boundsDict = [info objectForKey:(id)kCGWindowBounds];
-		CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)boundsDict, &bounds);
-
-		if (pid == ssPID && (!foundSS || bounds.size.width > ssRect.size.width)) {
-			ssRect = bounds; foundSS = YES;
-		}
-		if (pid == myPID && (!foundXPC || bounds.size.width > xpcRect.size.width)) {
-			xpcRect = bounds; foundXPC = YES;
-		}
-	}
-	CFRelease(windowList);
-
-	if (!foundSS || !foundXPC) return 0.0;
-	CGFloat contentWidth = (ssRect.origin.x + ssRect.size.width) - xpcRect.origin.x;
 	if (contentWidth < 300 || contentWidth > 1200) return 0.0;
 	return contentWidth;
 }
@@ -756,6 +752,9 @@ void disableViewRecursive(NSView* view)
 
 - (void) adjustLayout
 {
+	if (inAdjustLayout) return;
+	inAdjustLayout = YES;
+
 	NSView *mainView = [self mainView];
 	CGFloat viewWidth = NSWidth(mainView.frame);
 
@@ -866,6 +865,8 @@ void disableViewRecursive(NSView* view)
 			subview.frame = f;
 		}
 	}
+
+	inAdjustLayout = NO;
 }
 
 - (void) mainViewFrameChanged:(NSNotification *)note
@@ -876,62 +877,6 @@ void disableViewRecursive(NSView* view)
 - (void) didSelect
 {
 	[super didSelect];
-
-	/* --- Temporary diagnostic: verify CGWindowList data from XPC --- */
-	{
-		NSArray *apps = [NSRunningApplication
-			runningApplicationsWithBundleIdentifier:@"com.apple.systempreferences"];
-		pid_t ssPID = apps.count > 0 ? [(NSRunningApplication *)apps[0] processIdentifier] : 0;
-		pid_t myPID = getpid();
-
-		CFArrayRef windowList = CGWindowListCopyWindowInfo(
-			kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-			kCGNullWindowID);
-
-		NSMutableString *diag = [NSMutableString stringWithFormat:
-			@"SS PID: %d  XPC PID: %d\n", ssPID, myPID];
-
-		CGRect ssRect = CGRectZero, xpcRect = CGRectZero;
-		BOOL foundSS = NO, foundXPC = NO;
-
-		if (windowList) {
-			for (CFIndex i = 0; i < CFArrayGetCount(windowList); i++) {
-				NSDictionary *info = (NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
-				pid_t pid = [[info objectForKey:(id)kCGWindowOwnerPID] intValue];
-				int layer = [[info objectForKey:(id)kCGWindowLayer] intValue];
-				if (layer != 0) continue;
-
-				CGRect bounds;
-				NSDictionary *boundsDict = [info objectForKey:(id)kCGWindowBounds];
-				CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)boundsDict, &bounds);
-
-				if (pid == ssPID && (!foundSS || bounds.size.width > ssRect.size.width)) {
-					ssRect = bounds; foundSS = YES;
-				}
-				if (pid == myPID && (!foundXPC || bounds.size.width > xpcRect.size.width)) {
-					xpcRect = bounds; foundXPC = YES;
-				}
-			}
-			CFRelease(windowList);
-		}
-
-		[diag appendFormat:@"SS window: %@ x=%.0f w=%.0f\n",
-			foundSS ? @"found" : @"NOT FOUND", ssRect.origin.x, ssRect.size.width];
-		[diag appendFormat:@"XPC window: %@ x=%.0f w=%.0f\n",
-			foundXPC ? @"found" : @"NOT FOUND", xpcRect.origin.x, xpcRect.size.width];
-
-		CGFloat computed = 0;
-		if (foundSS && foundXPC)
-			computed = (ssRect.origin.x + ssRect.size.width) - xpcRect.origin.x;
-		[diag appendFormat:@"Computed content width: %.0f", computed];
-
-		NSAlert *alert = [[NSAlert alloc] init];
-		[alert setMessageText:@"CGWindowList Diagnostic"];
-		[alert setInformativeText:diag];
-		[alert runModal];
-	}
-	/* --- End diagnostic --- */
-
 	[self adjustLayout];
 }
 
