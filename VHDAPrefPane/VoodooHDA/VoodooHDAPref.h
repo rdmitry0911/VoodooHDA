@@ -102,6 +102,7 @@ enum {
 	CGFloat initialViewWidth;
 	CGFloat designBoxWidth;
 	CGFloat detectedContentWidth;
+	BOOL inAdjustLayout;
 }
 //- (bool) updateChannelInfo;
 - (bool) updateMath;
