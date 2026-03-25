@@ -2732,24 +2732,8 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 	nid_t cad = funcGroup->codec->cad;
 	nid_t nid_pin;
 	Widget *widget_pin;
-	/*
-	 * EIA-CEA 861-D speaker mappings (section 6.6.2)
-	 * ASP Channels 8-7-6-5-4-3-2-1
-	 */
-//	const static
-//	UInt8  hdmica[8] = {
-//		0x00, /*  -   -   -  -  -  -  FR FL */
-//		0x00, /*  -   -   -  -  -  -  FR FL */
-//		0x04, /*  -   -   - RC  -  -  FR FL */
-//		0x08, /*  -   -  RR RL  -  -  FR FL */
-//		0x0A, /*  -   -  RR RL FC  -  FR FL */
-//		0x0B, /*  -   -  RR RL FC LFE FR FL */
-//		0x12, /* RRC RLC RR RL FC  -  FR FL */
-//		0x13  /* RRC RLC RR RL FC LFE FR FL */
-//	};
-//	const static
-//	UInt32 hdmich[8] = { 0xFFFFFF00, 0xFFFFFF10, 0xFFF2FF10, 0xFF32FF10, 0xFF432F10, 0xFF542310, 0x65432F10, 0x76542310 };
-  
+	bool atiCodec = isAtiHdmiCodec(funcGroup->codec);
+
   /* Mapping formats to HDMI channel allocations. */
   const static UInt8 hdmica[2][8] =
   /*  1     2     3     4     5     6     7     8  */
@@ -2783,7 +2767,67 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 		 *   ch 1 - FL, ch 2 - FR, ch 3 - LFE, ch 4 - FC, ch 5 - RL, ch 6 - RR, ch 7 - RLC, ch 8 - RRC
 		 */
 
-		/* Set channel mapping. */
+		if (atiCodec) {
+			/*
+			 * ATI/AMD HDMI channel mapping via vendor-specific verbs.
+			 * In paired mode (default), FC and LFE are swapped vs standard HDMI.
+			 * Standard HDMI:  FL=0 FR=1 LFE=2 FC=3  RL=4 RR=5
+			 * ATI paired:     FL=0 FR=1 FC=2  LFE=3 RL=4 RR=5
+			 */
+			int ca = hdmica[totalext == 0 ? 0 : 1][totalchn - 1];
+
+			/* Set multichannel slots using ATI paired-mode verbs */
+			static const UInt16 ati_paired_verbs[4] = {
+				ATI_VERB_SET_MULTICHANNEL_01,
+				ATI_VERB_SET_MULTICHANNEL_23,
+				ATI_VERB_SET_MULTICHANNEL_45,
+				ATI_VERB_SET_MULTICHANNEL_67
+			};
+
+			for (int k = 0; k < 4; k++) {
+				int ch_lo = k * 2;
+				int ch_hi = k * 2 + 1;
+				int slot_lo, slot_hi;
+
+				if (ch_lo < totalchn) {
+					slot_lo = ch_lo;
+					if (slot_lo == 2) slot_lo = 3;      /* FC -> slot 3 (paired swap) */
+					else if (slot_lo == 3) slot_lo = 2;  /* LFE -> slot 2 */
+				} else {
+					slot_lo = 0xf;
+				}
+
+				if (ch_hi < totalchn) {
+					slot_hi = ch_hi;
+					if (slot_hi == 2) slot_hi = 3;
+					else if (slot_hi == 3) slot_hi = 2;
+				} else {
+					slot_hi = 0xf;
+				}
+
+				UInt32 val = ((slot_lo << 4) | ch_lo) | (((slot_hi << 4) | ch_hi) << 8);
+				sendCommand(ATI_CMD_12BIT(cad, nid_pin, ati_paired_verbs[k], val & 0xff), cad);
+			}
+
+			/* Set channel allocation via ATI verb */
+			sendCommand(ATI_CMD_12BIT(cad, nid_pin, ATI_VERB_SET_CHANNEL_ALLOCATION, ca), cad);
+
+			/* ATI HBR control */
+			if (HDA_PARAM_PIN_CAP_HDMI(widget_pin->pin.cap) &&
+				HDA_PARAM_PIN_CAP_HBR(widget_pin->pin.cap)) {
+				UInt32 hbr = 0;
+				if ((channel->format & AFMT_AC3) && (totalchn == 8))
+					hbr = ATI_HBR_ENABLE;
+				sendCommand(ATI_CMD_12BIT(cad, nid_pin, ATI_VERB_SET_HBR_CONTROL, hbr), cad);
+			}
+
+			if (mVerbose > 0)
+				logMsg("ATI HDMI: nid=%d ca=0x%02x totalchn=%d\n", nid_pin, ca, totalchn);
+
+			continue; /* skip standard DIP infoframe path */
+		}
+
+		/* Set channel mapping (standard HDA). */
 		for (int k = 0; k < 8; k++)
 			sendCommand(HDA_CMD_SET_HDMI_CHAN_SLOT(cad, nid_pin,
 												   (((hdmich[totalext == 0 ? 0 : 1][totalchn - 1]>> (k * 4)) & 0xf) << 4) | k), cad);

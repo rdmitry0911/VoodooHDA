@@ -326,4 +326,15 @@ typedef struct _Codec {
 	int	numFuncGroups;
 } Codec;
 
+/* ATI HDMI codec: vendor ID 0x1002 (all known ATI/AMD HDMI codec IDs) */
+static inline bool isAtiHdmiCodec(Codec *codec) {
+	return codec->vendorId == 0x1002;
+}
+
+/* Rev3+ ATI codecs (0x1002aa01 with revision >= 0x03) support single-channel remap mode */
+static inline bool isAtiHdmiRev3(Codec *codec) {
+	return (CODEC_ID(codec) == 0x1002aa01) &&
+	       (codec->revisionId >= 0x03);
+}
+
 #endif

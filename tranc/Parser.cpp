@@ -2477,6 +2477,35 @@ void VoodooHDADevice::audioCommit(FunctionGroup *funcGroup)
 		}
 	}
 
+	/*
+	 * ATI/AMD HDMI init: clear downmix and set multichannel mode.
+	 * Must happen after pin controls are committed.
+	 */
+	if (isAtiHdmiCodec(funcGroup->codec)) {
+		for (int i = 0; i < funcGroup->numNodes; i++) {
+			Widget *widget = &funcGroup->widgets[i];
+			if (!widget || widget->enable == 0)
+				continue;
+			if (widget->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+				continue;
+			if (!HDA_PARAM_PIN_CAP_DP(widget->pin.cap) &&
+				!HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap))
+				continue;
+
+			/* Disable downmix */
+			sendCommand(ATI_CMD_12BIT(cad, widget->nid, ATI_VERB_SET_DOWNMIX_INFO, 0), cad);
+
+			/* Rev3+ codecs: enable single-channel remap mode for finer control */
+			if (isAtiHdmiRev3(funcGroup->codec))
+				sendCommand(ATI_CMD_12BIT(cad, widget->nid, ATI_VERB_SET_MULTICHANNEL_MODE,
+										  ATI_MULTICHANNEL_MODE_SINGLE), cad);
+
+			if (mVerbose > 0)
+				logMsg("ATI HDMI init: nid=%d downmix=0 mode=%s\n", widget->nid,
+					   isAtiHdmiRev3(funcGroup->codec) ? "single" : "paired");
+		}
+	}
+
 	/* Commit GPIOs. */
 	gdata = 0;
 	gmask = 0;
@@ -4856,15 +4885,116 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
       (HDA_CONFIG_DEFAULTCONF_MISC(widget->pin.config) & 1) != 0)
     return;
   res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, widget->nid), cad);
-  if ((widget->eld != 0) == ((res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0))
-    return;
+
+  /*
+   * ATI/AMD HDMI codecs don't set ELD_VALID bit in pin sense response.
+   * For ATI codecs, skip the ELD_VALID check and always try to read ELD
+   * via ATI-specific verbs when pin presence is detected.
+   */
+  bool atiCodec = isAtiHdmiCodec(widget->funcGroup->codec);
+
+  if (!atiCodec) {
+    if ((widget->eld != 0) == ((res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0))
+      return;
+  }
+
   if (widget->eld != NULL) {
     widget->eld_len = 0;
     freeMem(widget->eld);
     widget->eld = NULL;
   }
-  if ((res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) == 0)
+
+  if (!atiCodec) {
+    if ((res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) == 0)
+      return;
+  }
+
+  if (atiCodec) {
+    /*
+     * ATI/AMD HDMI ELD emulation (based on Linux snd_hdmi_get_eld_ati).
+     * ATI codecs don't support standard GET_HDMI_DIP_SIZE/GET_HDMI_ELDD.
+     * Instead, we build a minimal ELD from ATI-specific verbs.
+     */
+    nid_t nid = widget->nid;
+
+    /* Get speaker allocation (channel allocation info) */
+    uint32_t spkalloc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_SPEAKER_ALLOCATION, 0), cad);
+    if (spkalloc == HDA_INVALID)
+      spkalloc = 0;
+
+    /* Get audio/video delay */
+    uint32_t avdelay = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_VIDEO_DELAY, 0), cad);
+    if (avdelay == HDA_INVALID)
+      avdelay = 0;
+
+    /* Read audio descriptors (SADs) — up to 15 descriptors, 3 bytes each */
+    uint8_t sads[15 * 3];
+    int nsads = 0;
+    for (int i = 0; i < 15; i++) {
+      /* Set descriptor index */
+      sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_SET_AUDIO_DESCRIPTOR, i), cad);
+      uint32_t desc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_DESCRIPTOR, 0), cad);
+      if (desc == HDA_INVALID)
+        continue;
+      /* SAD byte 0: format/channels, byte 1: sample rates, byte 2: bitrate */
+      uint8_t sad0 = (desc >> 0) & 0xff;
+      if (sad0 == 0)
+        break; /* no more descriptors */
+      sads[nsads * 3 + 0] = sad0;
+      sads[nsads * 3 + 1] = (desc >> 8) & 0xff;
+      sads[nsads * 3 + 2] = (desc >> 16) & 0xff;
+      nsads++;
+    }
+
+    /*
+     * Build a minimal ELD (EDID-Like Data).
+     * ELD baseline block layout (CEA-861):
+     *   [0]: ELD version (0x02 for CEA-861D)
+     *   [1]: reserved
+     *   [2]: baseline length / 4
+     *   [3]: reserved
+     *   [4..19]: monitor name (pad with 0)
+     *   [4]: CEA EDID version (0x03)
+     *   [5]: (conn_type << 2) | reserved — we set conn_type to HDMI (0)
+     *   [6]: audio_sync_delay
+     *   [7]: speaker allocation
+     *   [8..19]: reserved / monitor name
+     *   [20+]: SADs
+     * Minimal: header (4 bytes) + baseline_len bytes
+     */
+    int mnl = 0; /* monitor name length = 0 */
+    int baseline_len = 4 + mnl + nsads * 3;
+    int total_len = 4 + baseline_len;
+    widget->eld_len = total_len;
+    widget->eld = (uint8_t*)allocMem(total_len);
+    if (widget->eld == NULL) {
+      widget->eld_len = 0;
+      return;
+    }
+    bzero(widget->eld, total_len);
+
+    /* ELD header */
+    widget->eld[0] = 0x02; /* ELD version 2 (CEA-861D) */
+    widget->eld[2] = baseline_len / 4;
+    /* Baseline block */
+    widget->eld[4] = (nsads << 4) | mnl; /* SAD count and MNL */
+    widget->eld[5] = 0x00; /* conn_type = HDMI (0) */
+    widget->eld[6] = avdelay & 0xff;
+    widget->eld[7] = spkalloc & 0xff;
+    /* SADs start at offset 4 + 4 + mnl = 8 */
+    for (int i = 0; i < nsads * 3; i++)
+      widget->eld[8 + i] = sads[i];
+
+    if (mVerbose > 0) {
+      logMsg("ATI HDMI ELD emulation for nid=%d: spkalloc=0x%02x nsads=%d avdelay=%d\n",
+             nid, spkalloc & 0xff, nsads, avdelay & 0xff);
+      for (int i = 0; i < widget->eld_len; i++)
+        logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
+    }
     return;
+  }
+
+  /* Standard HDA ELD path */
   res = sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, widget->nid, 0x08), cad);
   if (res == HDA_INVALID)
     return;
@@ -4875,7 +5005,7 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
     widget->eld_len = 0;
     return;
   }
-  
+
   for (int i = 0; i < widget->eld_len; i++) {
     res = sendCommand(HDA_CMD_GET_HDMI_ELDD(cad, widget->nid, i), cad);
     if (res & 0x80000000)
@@ -4887,7 +5017,6 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
       logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
     }
   }
-//hdaa_channels_handler(&funcGroup->audio.assocs[widget->bindAssoc]); //там только дамп коннекторов
 }
 
 //Slice
