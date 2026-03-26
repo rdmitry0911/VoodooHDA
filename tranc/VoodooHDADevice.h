@@ -260,7 +260,7 @@ public:
 	void probeFunction(Codec *codec, nid_t nid);
 
 	int unsolqFlush();
-	void handleUnsolicited(Codec *codec, UInt32 tag);
+	void handleUnsolicited(Codec *codec, UInt32 tag, UInt32 resp);
 	void micSwitchHandlerEnableWidget(FunctionGroup *funcGroup, nid_t widget, int connNum, bool Enabled);
 	void SwitchHandlerRename(FunctionGroup *funcGroup, int assocsNum, nid_t nid, UInt32 res);
 	void micSwitchHandler(FunctionGroup *funcGroup, int nid, UInt32 res);

@@ -1943,7 +1943,12 @@ int VoodooHDADevice::rirbFlush()
 		codec = mCodecs[cad];
 		commands = codec->commands;
 		if (rirb->response_ex & HDAC_RIRB_RESPONSE_EX_UNSOLICITED) {
+			/* Store both the tag (bits [31:26]) and the full response
+			 * so HDMI/DP flag bits [1:0] are available to handleUnsolicited().
+			 * Queue format: even slot = (cad << 16) | tag, odd slot = resp */
 			mUnsolq[mUnsolqWritePtr++] = (cad << 16) | ((resp >> 26) & 0xffff);
+			mUnsolqWritePtr %= HDAC_UNSOLQ_MAX;
+			mUnsolq[mUnsolqWritePtr++] = resp;
 			mUnsolqWritePtr %= HDAC_UNSOLQ_MAX;
 		} else if (commands && (commands->numCommands > 0) &&
 				(codec->numRespReceived < commands->numCommands))
@@ -1967,11 +1972,13 @@ int VoodooHDADevice::unsolqFlush()
 		mUnsolqState = HDAC_UNSOLQ_BUSY;
 		while (mUnsolqReadPtr != mUnsolqWritePtr) {
 			nid_t cad;
-			UInt32 tag;
+			UInt32 tag, resp;
 			cad = mUnsolq[mUnsolqReadPtr] >> 16;
 			tag = mUnsolq[mUnsolqReadPtr++] & 0xffff;
 			mUnsolqReadPtr %= HDAC_UNSOLQ_MAX;
-			handleUnsolicited(mCodecs[cad], tag);
+			resp = mUnsolq[mUnsolqReadPtr++];
+			mUnsolqReadPtr %= HDAC_UNSOLQ_MAX;
+			handleUnsolicited(mCodecs[cad], tag, resp);
 			ret++;
 		}
 		mUnsolqState = HDAC_UNSOLQ_READY;
@@ -1982,15 +1989,17 @@ int VoodooHDADevice::unsolqFlush()
 
 /*
  * Unsolicited messages handler.
+ * For HDMI/DP pins, resp bits [1:0] carry flags:
+ *   bit 0 = presence change, bit 1 = ELD/status change.
+ * For analog pins, only presence (bit 0) is meaningful.
+ * (Based on FreeBSD hdaa_unsol_intr)
  */
-void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag)
+void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag, UInt32 resp)
 {
 	FunctionGroup *funcGroup = NULL;
 
 	if (!codec)
 		return;
-
-//	logMsg("Unsol Tag: 0x%08lx\n", tag);
 
 	for (int i = 0; i < codec->numFuncGroups; i++) {
 		if (codec->funcGroups[i].nodeType == HDA_PARAM_FCT_GRP_TYPE_NODE_TYPE_AUDIO) {
@@ -2004,8 +2013,46 @@ void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag)
 
 	switch (tag) {
 	case HDAC_UNSOLTAG_EVENT_HP:
-		switchHandler(funcGroup, false);
+	{
+		/*
+		 * Determine flags based on pin type (FreeBSD pattern).
+		 * HDMI/DP: flags = resp & 0x03 (presence + ELD change)
+		 * Analog:  flags = 0x01 (presence only)
+		 */
+		int flags = 0x01; /* default: presence only */
+
+		/* Check if any HDMI/DP pin uses this tag — if so, extract both flags */
+		for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
+			Widget *w = widgetGet(funcGroup, j);
+			if (!w || w->enable == 0 || w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+				continue;
+			if (HDA_PARAM_PIN_CAP_DP(w->pin.cap) || HDA_PARAM_PIN_CAP_HDMI(w->pin.cap)) {
+				flags = resp & 0x03;
+				break;
+			}
+		}
+
+		IOLog("VoodooHDA DBG: unsol tag=0x%x resp=0x%08x flags=0x%x\n",
+			  (unsigned)tag, (unsigned)resp, flags);
+
+		/* Presence change — standard jack switching */
+		if (flags & 0x01)
+			switchHandler(funcGroup, false);
+
+		/* ELD change — re-read ELD for HDMI/DP pins */
+		if (flags & 0x02) {
+			for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
+				Widget *w = widgetGet(funcGroup, j);
+				if (!w || w->enable == 0 || w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+					continue;
+				if (!HDA_PARAM_PIN_CAP_DP(w->pin.cap) && !HDA_PARAM_PIN_CAP_HDMI(w->pin.cap))
+					continue;
+				IOLog("VoodooHDA DBG: ELD change event, re-reading ELD for nid=%d\n", w->nid);
+				hdaa_eld_handler(w);
+			}
+		}
 		break;
+	}
 	default:
 		errorMsg("Unknown unsol tag: 0x%08lx!\n", (long unsigned int)tag);
 		break;

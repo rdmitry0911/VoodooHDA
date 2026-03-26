@@ -4838,50 +4838,47 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 		}
 		
 		/*
-		 * For HDMI/DP pins, always call ELD handler even without HP redirect.
-		 * Standard analog pins require hpredir for jack switching.
+		 * Register unsolicited response for ALL pins with the capability,
+		 * including HDMI/DP pins (FreeBSD hdaa_sense_init pattern).
+		 * HDMI/DP pins need unsolicited events for ELD change detection.
 		 */
-		if (HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ||
-			HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap)) {
-			IOLog("VoodooHDA ATI DBG: switchInit calling hdaa_eld_handler for HDMI/DP nid=%d\n", j);
-			hdaa_eld_handler(widget);
-			continue;
-		}
-		if (assocs[widget->bindAssoc].hpredir < 0) {
-			continue;
-		}
-		enable = 1;
 		if (HDA_PARAM_AUDIO_WIDGET_CAP_UNSOL_CAP(widget->params.widgetCap)) {
 			sendCommand(HDA_CMD_SET_UNSOLICITED_RESPONSE(cad, j,
 					HDA_CMD_SET_UNSOLICITED_RESPONSE_ENABLE | HDAC_UNSOLTAG_EVENT_HP), cad);
-		} /* else
-			poll = 1; */
-		//Slice - test initial state
-		int res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, j), cad);	
+			IOLog("VoodooHDA DBG: switchInit registered unsol response for nid=%d (HDMI=%d DP=%d)\n",
+				  j, HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) ? 1 : 0,
+				  HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ? 1 : 0);
+		}
+
+		/* Read initial presence state */
+		int res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, j), cad);
 		res = HDA_CMD_GET_PIN_SENSE_PRESENCE_DETECT(res);
 		if (funcGroup->audio.quirks & HDA_QUIRK_SENSEINV)
 			res ^= 1;
 		widget->sense = res;
+
+		/* HDMI/DP pins: call ELD handler, skip HP redirect logic */
+		if (HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ||
+			HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap)) {
+			IOLog("VoodooHDA DBG: switchInit calling hdaa_eld_handler for HDMI/DP nid=%d sense=%d\n", j, res);
+			hdaa_eld_handler(widget);
+			continue;
+		}
+
+		/* Analog pins: require HP redirect for jack switching */
+		if (assocs[widget->bindAssoc].hpredir < 0)
+			continue;
+		enable = 1;
+
 		UInt32 type = widget->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK;
-		/* Get pin direction. */
 		if ((type == HDA_CONFIG_DEFAULTCONF_DEVICE_LINE_OUT) ||
 			(type == HDA_CONFIG_DEFAULTCONF_DEVICE_SPEAKER) ||
 			(type == HDA_CONFIG_DEFAULTCONF_DEVICE_HP_OUT) ||
 			(type == HDA_CONFIG_DEFAULTCONF_DEVICE_SPDIF_OUT) ||
 			(type == HDA_CONFIG_DEFAULTCONF_DEVICE_DIGITAL_OTHER_OUT))
-			logMsg("Enabling output audio routing switching at node %d:\n", j);					
-		else {
+			logMsg("Enabling output audio routing switching at node %d:\n", j);
+		else
 			logMsg("Enabling input audio routing switching at node %d:\n", j);
-		}
-	/*	if (res) {
-			assocs[widget->bindAssoc].activeNid = j;
-	 //	SwitchHandlerRename(funcGroup, widget->bindAssoc, j, res);
-		}*/
-    if (!HDA_PARAM_PIN_CAP_DP(widget->pin.cap) &&
-        !HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap))
-      continue;
-    hdaa_eld_handler(widget);
-
 	}
 	funcGroup->mSwitchEnable = enable;
 /*	if (enable) {
