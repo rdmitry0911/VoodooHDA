@@ -4893,6 +4893,7 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
 {
   uint32_t res;
   int cad = widget->funcGroup->codec->cad;
+  nid_t nid = widget->nid;
   if (!widget || (widget->enable == 0))
     return;
   if ((widget->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX))
@@ -4900,146 +4901,142 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
   if (HDA_PARAM_PIN_CAP_PRESENCE_DETECT_CAP(widget->pin.cap) == 0 ||
       (HDA_CONFIG_DEFAULTCONF_MISC(widget->pin.config) & 1) != 0)
     return;
-  res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, widget->nid), cad);
 
-  /*
-   * ATI/AMD HDMI codecs don't set ELD_VALID bit in pin sense response.
-   * For ATI codecs, skip the ELD_VALID check and always try to read ELD
-   * via ATI-specific verbs when pin presence is detected.
-   */
+  res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, nid), cad);
   bool atiCodec = isAtiHdmiCodec(widget->funcGroup->codec);
+  bool presence = (res & HDA_CMD_GET_PIN_SENSE_PRESENCE_DETECT_MASK) != 0;
+  bool eldValid = (res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0;
+  bool isDP = HDA_PARAM_PIN_CAP_DP(widget->pin.cap) != 0;
+  bool isHDMI = HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) != 0;
 
-  IOLog("VoodooHDA ATI DBG: hdaa_eld_handler nid=%d atiCodec=%d pinSense=0x%08x ELD_VALID=%d\n",
-        widget->nid, atiCodec, (unsigned)res,
-        (res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) ? 1 : 0);
+  IOLog("VoodooHDA HDMI: ELD handler nid=%d ati=%d DP=%d HDMI=%d pinSense=0x%08x presence=%d ELD_VALID=%d pinCap=0x%08x pinCtrl=0x%02x\n",
+        nid, atiCodec, isDP, isHDMI, (unsigned)res, presence, eldValid,
+        (unsigned)widget->pin.cap, (unsigned)widget->pin.ctrl);
 
   if (!atiCodec) {
-    if ((widget->eld != 0) == ((res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0))
+    if ((widget->eld != 0) == (eldValid))
       return;
   }
 
+  /* Free old ELD */
   if (widget->eld != NULL) {
     widget->eld_len = 0;
     freeMem(widget->eld);
     widget->eld = NULL;
   }
 
-  if (!atiCodec) {
-    if ((res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) == 0)
-      return;
-  }
+  if (!atiCodec && !eldValid)
+    return;
 
-  if (atiCodec) {
-    /*
-     * ATI/AMD HDMI ELD emulation (based on Linux snd_hdmi_get_eld_ati).
-     * ATI codecs don't support standard GET_HDMI_DIP_SIZE/GET_HDMI_ELDD.
-     * Instead, we build a minimal ELD from ATI-specific verbs.
-     */
-    nid_t nid = widget->nid;
+  /*
+   * Strategy for ATI codecs on macOS:
+   *   1. Try standard HDA ELD verbs first — Apple GPU drivers may
+   *      program the ELD via standard path even on ATI HDA codecs.
+   *   2. If standard verbs fail or return empty, try ATI-specific verbs.
+   *   This handles both native macOS GPU driver and Hackintosh scenarios.
+   */
 
-    /* Get speaker allocation (channel allocation info) */
-    uint32_t spkalloc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_SPEAKER_ALLOCATION, 0), cad);
-    IOLog("VoodooHDA ATI DBG: ELD nid=%d GET_SPEAKER_ALLOCATION -> 0x%08x\n", nid, (unsigned)spkalloc);
-    if (spkalloc == HDA_INVALID)
-      spkalloc = 0;
+  /* === Attempt 1: Standard HDA ELD verbs === */
+  uint32_t dipSize = sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid, 0x08), cad);
+  int stdEldLen = (dipSize != HDA_INVALID) ? (dipSize & 0xff) : 0;
 
-    /* Get audio/video delay */
-    uint32_t avdelay = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_VIDEO_DELAY, 0), cad);
-    IOLog("VoodooHDA ATI DBG: ELD nid=%d GET_AUDIO_VIDEO_DELAY -> 0x%08x\n", nid, (unsigned)avdelay);
-    if (avdelay == HDA_INVALID)
-      avdelay = 0;
+  IOLog("VoodooHDA HDMI: nid=%d standard DIP_SIZE(0x08) -> 0x%08x (eldLen=%d)\n",
+        nid, (unsigned)dipSize, stdEldLen);
 
-    /* Read audio descriptors (SADs) — up to 15 descriptors, 3 bytes each */
-    uint8_t sads[15 * 3];
-    int nsads = 0;
-    for (int i = 0; i < 15; i++) {
-      /* Set descriptor index */
-      sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_SET_AUDIO_DESCRIPTOR, i), cad);
-      uint32_t desc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_DESCRIPTOR, 0), cad);
-      IOLog("VoodooHDA ATI DBG: ELD nid=%d SAD[%d] -> 0x%08x\n", nid, i, (unsigned)desc);
-      if (desc == HDA_INVALID)
-        continue;
-      /* SAD byte 0: format/channels, byte 1: sample rates, byte 2: bitrate */
-      uint8_t sad0 = (desc >> 0) & 0xff;
-      if (sad0 == 0)
-        break; /* no more descriptors */
-      sads[nsads * 3 + 0] = sad0;
-      sads[nsads * 3 + 1] = (desc >> 8) & 0xff;
-      sads[nsads * 3 + 2] = (desc >> 16) & 0xff;
-      nsads++;
-    }
+  if (stdEldLen > 0) {
+    widget->eld_len = stdEldLen;
+    widget->eld = (uint8_t*)allocMem(stdEldLen);
+    if (widget->eld) {
+      int validBytes = 0;
+      for (int i = 0; i < stdEldLen; i++) {
+        res = sendCommand(HDA_CMD_GET_HDMI_ELDD(cad, nid, i), cad);
+        if (res & 0x80000000) {
+          widget->eld[i] = res & 0xff;
+          if (widget->eld[i] != 0) validBytes++;
+        }
+      }
+      IOLog("VoodooHDA HDMI: nid=%d standard ELD read: %d bytes, %d non-zero\n",
+            nid, stdEldLen, validBytes);
 
-    /*
-     * Build a minimal ELD (EDID-Like Data).
-     * ELD baseline block layout (CEA-861):
-     *   [0]: ELD version (0x02 for CEA-861D)
-     *   [1]: reserved
-     *   [2]: baseline length / 4
-     *   [3]: reserved
-     *   [4..19]: monitor name (pad with 0)
-     *   [4]: CEA EDID version (0x03)
-     *   [5]: (conn_type << 2) | reserved — we set conn_type to HDMI (0)
-     *   [6]: audio_sync_delay
-     *   [7]: speaker allocation
-     *   [8..19]: reserved / monitor name
-     *   [20+]: SADs
-     * Minimal: header (4 bytes) + baseline_len bytes
-     */
-    int mnl = 0; /* monitor name length = 0 */
-    int baseline_len = 4 + mnl + nsads * 3;
-    int total_len = 4 + baseline_len;
-    widget->eld_len = total_len;
-    widget->eld = (uint8_t*)allocMem(total_len);
-    if (widget->eld == NULL) {
+      if (validBytes > 0) {
+        /* Standard ELD has data — use it */
+        IOLog("VoodooHDA HDMI: nid=%d using STANDARD ELD path (version=0x%02x spkalloc=0x%02x)\n",
+              nid, (stdEldLen > 0) ? widget->eld[0] >> 3 : 0,
+              (stdEldLen > 7) ? widget->eld[7] : 0);
+        logMsg("HDMI ELD (standard) nid=%d: %d bytes\n", nid, stdEldLen);
+        for (int i = 0; i < stdEldLen; i++)
+          logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
+        return; /* success with standard verbs */
+      }
+
+      /* Standard ELD was all zeros — fall through to ATI path */
+      IOLog("VoodooHDA HDMI: nid=%d standard ELD all zeros, trying ATI verbs\n", nid);
+      freeMem(widget->eld);
+      widget->eld = NULL;
       widget->eld_len = 0;
-      return;
     }
-    bzero(widget->eld, total_len);
+  }
 
-    /* ELD header */
-    widget->eld[0] = 0x02; /* ELD version 2 (CEA-861D) */
-    widget->eld[2] = baseline_len / 4;
-    /* Baseline block */
-    widget->eld[4] = (nsads << 4) | mnl; /* SAD count and MNL */
-    widget->eld[5] = 0x00; /* conn_type = HDMI (0) */
-    widget->eld[6] = avdelay & 0xff;
-    widget->eld[7] = spkalloc & 0xff;
-    /* SADs start at offset 4 + 4 + mnl = 8 */
-    for (int i = 0; i < nsads * 3; i++)
-      widget->eld[8 + i] = sads[i];
-
-    IOLog("VoodooHDA ATI DBG: ELD emulation done nid=%d: spkalloc=0x%02x nsads=%d avdelay=%d eld_len=%d\n",
-          nid, spkalloc & 0xff, nsads, avdelay & 0xff, widget->eld_len);
-    logMsg("ATI HDMI ELD emulation for nid=%d: spkalloc=0x%02x nsads=%d avdelay=%d\n",
-           nid, spkalloc & 0xff, nsads, avdelay & 0xff);
-    for (int i = 0; i < widget->eld_len; i++)
-      logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
+  if (!atiCodec) {
+    IOLog("VoodooHDA HDMI: nid=%d not ATI codec, no fallback available\n", nid);
     return;
   }
 
-  /* Standard HDA ELD path */
-  res = sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, widget->nid, 0x08), cad);
-  if (res == HDA_INVALID)
-    return;
-  widget->eld_len = res & 0xff;
-  if (widget->eld_len != 0)
-    widget->eld = (uint8_t*)allocMem(widget->eld_len);
+  /* === Attempt 2: ATI-specific ELD emulation === */
+  IOLog("VoodooHDA HDMI: nid=%d trying ATI ELD emulation verbs\n", nid);
+
+  uint32_t spkalloc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_SPEAKER_ALLOCATION, 0), cad);
+  uint32_t avdelay = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_VIDEO_DELAY, 0), cad);
+
+  IOLog("VoodooHDA HDMI: nid=%d ATI SPEAKER_ALLOC=0x%08x AV_DELAY=0x%08x\n",
+        nid, (unsigned)spkalloc, (unsigned)avdelay);
+
+  if (spkalloc == HDA_INVALID) spkalloc = 0;
+  if (avdelay == HDA_INVALID) avdelay = 0;
+
+  /* Read audio descriptors (SADs) */
+  uint8_t sads[15 * 3];
+  int nsads = 0;
+  for (int i = 0; i < 15; i++) {
+    sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_SET_AUDIO_DESCRIPTOR, i), cad);
+    uint32_t desc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_DESCRIPTOR, 0), cad);
+    if (i < 3) /* log first few */
+      IOLog("VoodooHDA HDMI: nid=%d ATI SAD[%d]=0x%08x\n", nid, i, (unsigned)desc);
+    if (desc == HDA_INVALID) continue;
+    uint8_t sad0 = desc & 0xff;
+    if (sad0 == 0) break;
+    sads[nsads * 3 + 0] = sad0;
+    sads[nsads * 3 + 1] = (desc >> 8) & 0xff;
+    sads[nsads * 3 + 2] = (desc >> 16) & 0xff;
+    nsads++;
+  }
+
+  bool atiDataEmpty = (spkalloc == 0) && (nsads == 0);
+  IOLog("VoodooHDA HDMI: nid=%d ATI ELD result: spkalloc=0x%02x nsads=%d %s\n",
+        nid, spkalloc & 0xff, nsads, atiDataEmpty ? "EMPTY (GPU not ready?)" : "OK");
+
+  /* Build minimal ELD */
+  int mnl = 0;
+  int baseline_len = 4 + mnl + nsads * 3;
+  int total_len = 4 + baseline_len;
+  widget->eld_len = total_len;
+  widget->eld = (uint8_t*)allocMem(total_len);
   if (widget->eld == NULL) {
     widget->eld_len = 0;
     return;
   }
+  bzero(widget->eld, total_len);
+  widget->eld[0] = 0x02;
+  widget->eld[2] = baseline_len / 4;
+  widget->eld[4] = (nsads << 4) | mnl;
+  widget->eld[5] = isDP ? 0x04 : 0x00; /* conn_type: DP=1, HDMI=0 */
+  widget->eld[6] = avdelay & 0xff;
+  widget->eld[7] = spkalloc & 0xff;
+  for (int i = 0; i < nsads * 3; i++)
+    widget->eld[8 + i] = sads[i];
 
-  for (int i = 0; i < widget->eld_len; i++) {
-    res = sendCommand(HDA_CMD_GET_HDMI_ELDD(cad, widget->nid, i), cad);
-    if (res & 0x80000000)
-      widget->eld[i] = res & 0xff;
-  }
-  if (mVerbose > 0) {
-    logMsg("dump eld for nid=%d:\n", widget->nid);
-    for (int i = 0; i < widget->eld_len; i++) {
-      logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
-    }
-  }
+  logMsg("HDMI ELD (ATI emulated) nid=%d: spkalloc=0x%02x nsads=%d\n",
+         nid, spkalloc & 0xff, nsads);
 }
 
 //Slice
