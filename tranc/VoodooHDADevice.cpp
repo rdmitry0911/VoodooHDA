@@ -553,14 +553,18 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	msiCtl = mPciNub->configRead16(0x62);
 	logMsg("MSI_CTL=0x%04x\n", msiCtl);
 
-	if (!getCapabilities()) {
-		errorMsg("error: getCapabilities failed\n");
+	/*
+	 * Reset controller BEFORE reading capabilities.
+	 * AMD Radeon GPUs report invalid CORB/RIRB size (0) unless
+	 * the controller is reset first (FreeBSD commit dab9ef544868).
+	 */
+	if (!resetController(true)) {
+		errorMsg("error: resetController failed\n");
 		goto done;
 	}
 
-//	logMsg("Resetting controller...\n");
-	if (!resetController(true)) {
-		errorMsg("error: resetController failed\n");
+	if (!getCapabilities()) {
+		errorMsg("error: getCapabilities failed\n");
 		goto done;
 	}
 
@@ -1068,8 +1072,11 @@ bool VoodooHDADevice::getCapabilities()
 	else if ((corbSizeReg & HDAC_CORBSIZE_CORBSZCAP_2) == HDAC_CORBSIZE_CORBSZCAP_2)
 		mCorbSize = 2;
 	else {
-		errorMsg("error: invalid CORB size: %02x\n", corbSizeReg);
-		goto done;
+		/* Hardware reports invalid CORB size (e.g. AMD Radeon GPUs).
+		 * Default to 256 and write back to register (FreeBSD PR 289284). */
+		errorMsg("warning: invalid CORB size (%02x), defaulting to 256\n", corbSizeReg);
+		mCorbSize = 256;
+		writeData8(HDAC_CORBSIZE, HDAC_CORBSIZE_CORBSIZE(HDAC_CORBSIZE_CORBSIZE_256));
 	}
 
 	rirbSizeReg = readData8(HDAC_RIRBSIZE);
@@ -1080,8 +1087,11 @@ bool VoodooHDADevice::getCapabilities()
 	else if ((rirbSizeReg & HDAC_RIRBSIZE_RIRBSZCAP_2) == HDAC_RIRBSIZE_RIRBSZCAP_2)
 		mRirbSize = 2;
 	else {
-		errorMsg("error: invalid RIRB size: %02x\n", rirbSizeReg);
-		goto done;
+		/* Hardware reports invalid RIRB size (e.g. AMD Radeon GPUs).
+		 * Default to 256 and write back to register (FreeBSD PR 289284). */
+		errorMsg("warning: invalid RIRB size (%02x), defaulting to 256\n", rirbSizeReg);
+		mRirbSize = 256;
+		writeData8(HDAC_RIRBSIZE, HDAC_RIRBSIZE_RIRBSIZE(HDAC_RIRBSIZE_RIRBSIZE_256));
 	}
 
 //	logMsg("    CORB size: %d\n", mCorbSize);
