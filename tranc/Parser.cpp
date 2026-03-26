@@ -2482,6 +2482,8 @@ void VoodooHDADevice::audioCommit(FunctionGroup *funcGroup)
 	 * Must happen after pin controls are committed.
 	 */
 	if (isAtiHdmiCodec(funcGroup->codec)) {
+		IOLog("VoodooHDA ATI DBG: audioCommit detected ATI HDMI codec (vendorId=0x%04x deviceId=0x%04x rev=0x%02x)\n",
+			  funcGroup->codec->vendorId, funcGroup->codec->deviceId, funcGroup->codec->revisionId);
 		for (int i = 0; i < funcGroup->numNodes; i++) {
 			Widget *widget = &funcGroup->widgets[i];
 			if (!widget || widget->enable == 0)
@@ -2489,21 +2491,28 @@ void VoodooHDADevice::audioCommit(FunctionGroup *funcGroup)
 			if (widget->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
 				continue;
 			if (!HDA_PARAM_PIN_CAP_DP(widget->pin.cap) &&
-				!HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap))
+				!HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap)) {
+				IOLog("VoodooHDA ATI DBG: audioCommit nid=%d: pin but no HDMI/DP cap (cap=0x%08x), skip\n",
+					  widget->nid, (unsigned)widget->pin.cap);
 				continue;
+			}
 
+			IOLog("VoodooHDA ATI DBG: audioCommit nid=%d: HDMI/DP pin, setting downmix=0\n", widget->nid);
 			/* Disable downmix */
 			sendCommand(ATI_CMD_12BIT(cad, widget->nid, ATI_VERB_SET_DOWNMIX_INFO, 0), cad);
 
 			/* Rev3+ codecs: enable single-channel remap mode for finer control */
-			if (isAtiHdmiRev3(funcGroup->codec))
+			if (isAtiHdmiRev3(funcGroup->codec)) {
+				IOLog("VoodooHDA ATI DBG: audioCommit nid=%d: rev3+, setting single-channel mode\n", widget->nid);
 				sendCommand(ATI_CMD_12BIT(cad, widget->nid, ATI_VERB_SET_MULTICHANNEL_MODE,
 										  ATI_MULTICHANNEL_MODE_SINGLE), cad);
+			}
 
-			if (mVerbose > 0)
-				logMsg("ATI HDMI init: nid=%d downmix=0 mode=%s\n", widget->nid,
-					   isAtiHdmiRev3(funcGroup->codec) ? "single" : "paired");
+			logMsg("ATI HDMI init: nid=%d downmix=0 mode=%s\n", widget->nid,
+				   isAtiHdmiRev3(funcGroup->codec) ? "single" : "paired");
 		}
+	} else {
+		IOLog("VoodooHDA ATI DBG: audioCommit: NOT ATI codec (vendorId=0x%04x)\n", funcGroup->codec->vendorId);
 	}
 
 	/* Commit GPIOs. */
@@ -4828,6 +4837,16 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 			continue;
 		}
 		
+		/*
+		 * For HDMI/DP pins, always call ELD handler even without HP redirect.
+		 * Standard analog pins require hpredir for jack switching.
+		 */
+		if (HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ||
+			HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap)) {
+			IOLog("VoodooHDA ATI DBG: switchInit calling hdaa_eld_handler for HDMI/DP nid=%d\n", j);
+			hdaa_eld_handler(widget);
+			continue;
+		}
 		if (assocs[widget->bindAssoc].hpredir < 0) {
 			continue;
 		}
@@ -4893,6 +4912,10 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
    */
   bool atiCodec = isAtiHdmiCodec(widget->funcGroup->codec);
 
+  IOLog("VoodooHDA ATI DBG: hdaa_eld_handler nid=%d atiCodec=%d pinSense=0x%08x ELD_VALID=%d\n",
+        widget->nid, atiCodec, (unsigned)res,
+        (res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) ? 1 : 0);
+
   if (!atiCodec) {
     if ((widget->eld != 0) == ((res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0))
       return;
@@ -4919,11 +4942,13 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
 
     /* Get speaker allocation (channel allocation info) */
     uint32_t spkalloc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_SPEAKER_ALLOCATION, 0), cad);
+    IOLog("VoodooHDA ATI DBG: ELD nid=%d GET_SPEAKER_ALLOCATION -> 0x%08x\n", nid, (unsigned)spkalloc);
     if (spkalloc == HDA_INVALID)
       spkalloc = 0;
 
     /* Get audio/video delay */
     uint32_t avdelay = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_VIDEO_DELAY, 0), cad);
+    IOLog("VoodooHDA ATI DBG: ELD nid=%d GET_AUDIO_VIDEO_DELAY -> 0x%08x\n", nid, (unsigned)avdelay);
     if (avdelay == HDA_INVALID)
       avdelay = 0;
 
@@ -4934,6 +4959,7 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
       /* Set descriptor index */
       sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_SET_AUDIO_DESCRIPTOR, i), cad);
       uint32_t desc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_DESCRIPTOR, 0), cad);
+      IOLog("VoodooHDA ATI DBG: ELD nid=%d SAD[%d] -> 0x%08x\n", nid, i, (unsigned)desc);
       if (desc == HDA_INVALID)
         continue;
       /* SAD byte 0: format/channels, byte 1: sample rates, byte 2: bitrate */
@@ -4985,12 +5011,12 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
     for (int i = 0; i < nsads * 3; i++)
       widget->eld[8 + i] = sads[i];
 
-    if (mVerbose > 0) {
-      logMsg("ATI HDMI ELD emulation for nid=%d: spkalloc=0x%02x nsads=%d avdelay=%d\n",
-             nid, spkalloc & 0xff, nsads, avdelay & 0xff);
-      for (int i = 0; i < widget->eld_len; i++)
-        logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
-    }
+    IOLog("VoodooHDA ATI DBG: ELD emulation done nid=%d: spkalloc=0x%02x nsads=%d avdelay=%d eld_len=%d\n",
+          nid, spkalloc & 0xff, nsads, avdelay & 0xff, widget->eld_len);
+    logMsg("ATI HDMI ELD emulation for nid=%d: spkalloc=0x%02x nsads=%d avdelay=%d\n",
+           nid, spkalloc & 0xff, nsads, avdelay & 0xff);
+    for (int i = 0; i < widget->eld_len; i++)
+      logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
     return;
   }
 

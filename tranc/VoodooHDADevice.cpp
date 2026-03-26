@@ -2733,6 +2733,8 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 	nid_t nid_pin;
 	Widget *widget_pin;
 	bool atiCodec = isAtiHdmiCodec(funcGroup->codec);
+	IOLog("VoodooHDA ATI DBG: streamHDMIorDPExtraSetup called dac=%d atiCodec=%d totalchn=%d totalext=%d\n",
+		  dac, atiCodec, totalchn, totalext);
 
   /* Mapping formats to HDMI channel allocations. */
   const static UInt8 hdmica[2][8] =
@@ -2775,6 +2777,8 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 			 * ATI paired:     FL=0 FR=1 FC=2  LFE=3 RL=4 RR=5
 			 */
 			int ca = hdmica[totalext == 0 ? 0 : 1][totalchn - 1];
+			IOLog("VoodooHDA ATI DBG: streamHDMIorDPExtraSetup ATI path nid_pin=%d dac=%d ca=0x%02x totalchn=%d totalext=%d\n",
+				  nid_pin, dac, ca, totalchn, totalext);
 
 			/* Set multichannel slots using ATI paired-mode verbs */
 			static const UInt16 ati_paired_verbs[4] = {
