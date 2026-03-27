@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  OpenCore Kernel -> Patch entry
+  Patches AppleGFXHDA::probe() to return NULL (xor eax,eax; ret; nop...)
+  This prevents AppleGFXHDA from claiming ANY HDA device (AMD + Intel),
+  freeing them for VoodooHDA HDMI testing.
+
+  Toggle via Enabled key. Verified unique on macOS Tahoe 25D125,
+  AppleGFXHDA 500.1 (com.apple.driver.AppleGFXHDA).
+-->
+<plist version="1.0">
+<dict>
+	<key>Arch</key>
+	<string>x86_64</string>
+	<key>Base</key>
+	<string></string>
+	<key>Comment</key>
+	<string>Disable AppleGFXHDA probe - VoodooHDA HDMI testing</string>
+	<key>Count</key>
+	<integer>1</integer>
+	<key>Enabled</key>
+	<true/>
+	<key>Find</key>
+	<data>VUiJ5UFXQVZBVUFUU1BIiftIhfY=</data>
+	<key>Identifier</key>
+	<string>com.apple.driver.AppleGFXHDA</string>
+	<key>Limit</key>
+	<integer>0</integer>
+	<key>Mask</key>
+	<data></data>
+	<key>MaxKernel</key>
+	<string></string>
+	<key>MinKernel</key>
+	<string></string>
+	<key>Replace</key>
+	<data>McDDkJCQkJCQkJCQkJCQkJCQkJA=</data>
+	<key>ReplaceMask</key>
+	<data></data>
+	<key>Skip</key>
+	<integer>0</integer>
+	<key>Strategy</key>
+	<string></string>
+</dict>
+</plist>

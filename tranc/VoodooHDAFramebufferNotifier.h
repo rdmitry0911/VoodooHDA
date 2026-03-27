@@ -9,13 +9,12 @@
 #include <IOKit/IOLocks.h>
 #include <IOKit/pci/IOPCIDevice.h>
 /*
- * IOFramebuffer integration uses runtime symbol resolution
- * to avoid hard dependency on IOGraphicsFamily.
- * Only the EDID property and IOService matching are used directly.
+ * Include IOFramebuffer.h for the class declaration only.
+ * Virtual method calls (setAttributeForConnection) dispatch through the
+ * vtable at runtime and do NOT require linking against IOGraphicsFamily.
+ * This also provides kIODisplayEDIDKey, kConnectionEnableAudio, etc.
  */
-#define kIODisplayEDIDKey "IODisplayEDID"
-#define kConnectionEnableAudio 0x61756420  /* 'aud ' */
-#define kConnectionAudioStreaming 0x61756473 /* 'auds' */
+#include <IOKit/graphics/IOFramebuffer.h>
 
 #include "Private.h"
 

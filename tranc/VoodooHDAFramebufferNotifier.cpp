@@ -248,6 +248,7 @@ void VoodooHDAFramebufferNotifier::handleFramebufferMatched(IOService *fb)
 		conn->displayOnline = true;
 		FBLOG("handleFBMatched: EDID valid, spkalloc=0x%02x nsads=%d",
 		      conn->speakerAllocation, conn->numSADs);
+		enableAudioPipe(conn);
 		injectELDIntoWidget(conn);
 	}
 
@@ -299,6 +300,7 @@ IOReturn VoodooHDAFramebufferNotifier::interestHandler(
 			self->buildELDFromEDID(conn);
 			conn->edidValid = true;
 			conn->displayOnline = true;
+			self->enableAudioPipe(conn);
 			self->injectELDIntoWidget(conn);
 			FBLOG("interestHandler: EDID updated, spkalloc=0x%02x nsads=%d",
 			      conn->speakerAllocation, conn->numSADs);
@@ -335,8 +337,34 @@ bool VoodooHDAFramebufferNotifier::readEDID(FBConnectionState *conn)
 		conn->edidLen = 0;
 	}
 
-	/* Read IODisplayEDID property — works via IOService::getProperty(), no IOGraphicsFamily needed */
+	/*
+	 * IODisplayEDID lives on the IODisplay child, not on the IOFramebuffer itself.
+	 * IOKit tree: IOFramebuffer -> IODisplayConnect -> IODisplay (has IODisplayEDID).
+	 * Search up to 2 levels deep without requiring IOGraphicsFamily headers.
+	 */
 	OSData *edidProp = OSDynamicCast(OSData, conn->framebuffer->getProperty(kIODisplayEDIDKey));
+
+	if (!edidProp) {
+		OSIterator *iter = conn->framebuffer->getChildIterator(gIOServicePlane);
+		if (iter) {
+			IOService *child;
+			while (!edidProp && (child = OSDynamicCast(IOService, iter->getNextObject()))) {
+				edidProp = OSDynamicCast(OSData, child->getProperty(kIODisplayEDIDKey));
+				if (!edidProp) {
+					/* IODisplayConnect -> IODisplay */
+					OSIterator *iter2 = child->getChildIterator(gIOServicePlane);
+					if (iter2) {
+						IOService *grandChild;
+						while (!edidProp && (grandChild = OSDynamicCast(IOService, iter2->getNextObject())))
+							edidProp = OSDynamicCast(OSData, grandChild->getProperty(kIODisplayEDIDKey));
+						iter2->release();
+					}
+				}
+			}
+			iter->release();
+		}
+	}
+
 	if (edidProp && edidProp->getLength() >= 128) {
 		conn->edidLen = edidProp->getLength();
 		conn->edidData = (uint8_t *)IOMalloc(conn->edidLen);
@@ -460,18 +488,30 @@ void VoodooHDAFramebufferNotifier::buildELDFromEDID(FBConnectionState *conn)
 
 bool VoodooHDAFramebufferNotifier::enableAudioPipe(FBConnectionState *conn)
 {
+	if (!conn->framebuffer) return false;
+
 	/*
-	 * setAttributeForConnectionExt requires linking with IOGraphicsFamily
-	 * which is not available on all macOS versions for third-party kexts.
-	 * On macOS, the GPU framebuffer driver typically enables the audio pipe
-	 * automatically when a display is connected. We rely on that.
+	 * Activate the GPU audio pipe via IOFramebuffer::setAttributeForConnection().
+	 * This is a virtual method — the call dispatches through the vtable at runtime
+	 * and does NOT require linking against IOGraphicsFamily.  The header is only
+	 * needed for the vtable layout (compile-time constant).
 	 *
-	 * If audio still doesn't work, the user needs AppleGFXHDA or
-	 * WhateverGreen to handle the GPU audio pipe activation.
+	 * Safety: we verified the object is an AMDFramebuffer (IOFramebuffer subclass)
+	 * in isSameGPU() before creating the connection.
 	 */
-	FBLOG("enableAudioPipe: pin=%d (relying on GPU driver auto-enable)", conn->mappedPinNid);
-	conn->audioPipeEnabled = true;
-	return true;
+	IOFramebuffer *fb = reinterpret_cast<IOFramebuffer *>(conn->framebuffer);
+
+	/* Enable audio on this connection — mirrors what AppleGFXHDA does */
+	IOReturn ret = fb->setAttributeForConnection(0, kConnectionEnableAudio, 1);
+	FBLOG("enableAudioPipe: pin=%d setAttributeForConnection(kConnectionEnableAudio)=%x", conn->mappedPinNid, ret);
+
+	if (ret == kIOReturnSuccess) {
+		ret = fb->setAttributeForConnection(0, kConnectionAudioStreaming, 1);
+		FBLOG("enableAudioPipe: pin=%d setAttributeForConnection(kConnectionAudioStreaming)=%x", conn->mappedPinNid, ret);
+	}
+
+	conn->audioPipeEnabled = (ret == kIOReturnSuccess);
+	return conn->audioPipeEnabled;
 }
 
 void VoodooHDAFramebufferNotifier::disableAudioPipe(FBConnectionState *conn)
