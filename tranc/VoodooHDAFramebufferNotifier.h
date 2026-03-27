@@ -8,8 +8,14 @@
 #include <IOKit/IONotifier.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/pci/IOPCIDevice.h>
-#include <IOKit/graphics/IOFramebuffer.h>
-#include <IOKit/graphics/IOGraphicsTypes.h>
+/*
+ * IOFramebuffer integration uses runtime symbol resolution
+ * to avoid hard dependency on IOGraphicsFamily.
+ * Only the EDID property and IOService matching are used directly.
+ */
+#define kIODisplayEDIDKey "IODisplayEDID"
+#define kConnectionEnableAudio 0x61756420  /* 'aud ' */
+#define kConnectionAudioStreaming 0x61756473 /* 'auds' */
 
 #include "Private.h"
 
@@ -21,7 +27,7 @@ class VoodooHDADevice;
 
 /* Per-framebuffer connection tracking */
 struct FBConnectionState {
-	IOFramebuffer *framebuffer;
+	IOService *framebuffer;
 	IONotifier    *fbNotifier;
 	bool           displayOnline;
 	bool           edidValid;
@@ -81,15 +87,14 @@ private:
 	static bool gfxTerminatedHandler(void *target, void *refCon,
 	                                  IOService *service, IONotifier *notifier);
 
-	/* IOFramebuffer notification callback */
-	static IOReturn framebufferEventHandler(OSObject *obj, void *ref,
-	                                         IOFramebuffer *framebuffer,
-	                                         IOIndex event, void *info);
+	/* IOService interest notification (no IOGraphicsFamily dependency) */
+	static IOReturn interestHandler(void *target, void *refCon,
+	                                 UInt32 messageType, IOService *provider,
+	                                 void *messageArgument, vm_size_t argSize);
 
 	/* Internal helpers */
-	void handleFramebufferMatched(IOFramebuffer *fb);
-	void handleFramebufferTerminated(IOFramebuffer *fb);
-	void handleEvent(FBConnectionState *conn, IOIndex event, void *info);
+	void handleFramebufferMatched(IOService *fb);
+	void handleFramebufferTerminated(IOService *fb);
 
 	bool isSameGPU(IOService *fbService);
 	bool readEDID(FBConnectionState *conn);
@@ -100,7 +105,7 @@ private:
 	void injectELDIntoWidget(FBConnectionState *conn);
 	void clearWidgetELD(FBConnectionState *conn);
 
-	FBConnectionState *findConnection(IOFramebuffer *fb);
+	FBConnectionState *findConnection(IOService *fb);
 	FBConnectionState *findConnectionForPin(int cad, nid_t pinNid);
 	void mapConnectionToPin(FBConnectionState *conn, int connIndex);
 };

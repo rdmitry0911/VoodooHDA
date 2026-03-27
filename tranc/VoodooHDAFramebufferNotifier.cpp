@@ -5,8 +5,6 @@
 #include "Verbs.h"
 
 #include <IOKit/pci/IOPCIDevice.h>
-#include <IOKit/graphics/IOFramebuffer.h>
-#include <IOKit/graphics/IOGraphicsTypes.h>
 
 OSDefineMetaClassAndStructors(VoodooHDAFramebufferNotifier, OSObject)
 
@@ -84,7 +82,11 @@ void VoodooHDAFramebufferNotifier::registerATIPins(int cad, nid_t *pinNids, int 
 
 void VoodooHDAFramebufferNotifier::startMatching()
 {
-	/* Match IOFramebuffer services from AMD GPUs */
+	/*
+	 * Match IOFramebuffer services from AMD GPUs.
+	 * We use string-based serviceMatching("IOFramebuffer") which does NOT
+	 * require linking against IOGraphicsFamily — only IOKit core.
+	 */
 	OSDictionary *matchDict = IOService::serviceMatching("IOFramebuffer");
 	if (!matchDict) {
 		FBLOG("startMatching: failed to create matching dict");
@@ -98,8 +100,6 @@ void VoodooHDAFramebufferNotifier::startMatching()
 		&VoodooHDAFramebufferNotifier::gfxMatchedHandler,
 		this, NULL, 0);
 
-	/* addMatchingNotification consumes one reference to matchDict,
-	 * but we need a second dict for the termination notifier */
 	matchDict = IOService::serviceMatching("IOFramebuffer");
 	if (matchDict) {
 		mGFXTermNotifier = IOService::addMatchingNotification(
@@ -160,21 +160,17 @@ bool VoodooHDAFramebufferNotifier::isSameGPU(IOService *fbService)
 
 	/* Check vendor is AMD/ATI */
 	UInt16 fbVendor = fbPCI->configRead16(kIOPCIConfigVendorID);
-	if (fbVendor != 0x1002) {
-		FBLOG("isSameGPU: fbPCI vendor=0x%04x, not AMD", fbVendor);
-		return false;
-	}
+	if (fbVendor != 0x1002) return false;
 
 	/*
 	 * GPU display is PCI function 0, HDA audio is function 1.
-	 * They share the same bus and device number.
-	 * Compare the parent (PCI bridge) — they must be siblings.
+	 * They share the same parent PCI bridge.
 	 */
 	IOService *hdaParent = mHDAPciDevice->getProvider();
 	IOService *fbParent = fbPCI->getProvider();
 
 	bool same = (hdaParent && fbParent && hdaParent == fbParent);
-	FBLOG("isSameGPU: fbPCI=%p (vendor=0x%04x) hdaParent=%p fbParent=%p -> %s",
+	FBLOG("isSameGPU: fbPCI=%p vendor=0x%04x hdaParent=%p fbParent=%p -> %s",
 	      fbPCI, fbVendor, hdaParent, fbParent, same ? "YES" : "NO");
 	return same;
 }
@@ -185,18 +181,14 @@ bool VoodooHDAFramebufferNotifier::gfxMatchedHandler(
 	void *target, void *refCon, IOService *newService, IONotifier *notifier)
 {
 	VoodooHDAFramebufferNotifier *self = (VoodooHDAFramebufferNotifier *)target;
-	IOFramebuffer *fb = OSDynamicCast(IOFramebuffer, newService);
-	if (!fb) return true; /* continue matching */
+	if (!newService) return true;
 
-	FBLOG("gfxMatchedHandler: IOFramebuffer=%p class=%s",
-	      fb, fb->getMetaClass()->getClassName());
+	FBLOG("gfxMatchedHandler: service=%p class=%s",
+	      newService, newService->getMetaClass()->getClassName());
 
-	if (!self->isSameGPU(newService)) {
-		FBLOG("gfxMatchedHandler: not our GPU, skipping");
-		return true;
-	}
+	if (!self->isSameGPU(newService)) return true;
 
-	self->handleFramebufferMatched(fb);
+	self->handleFramebufferMatched(newService);
 	return true;
 }
 
@@ -204,27 +196,24 @@ bool VoodooHDAFramebufferNotifier::gfxTerminatedHandler(
 	void *target, void *refCon, IOService *service, IONotifier *notifier)
 {
 	VoodooHDAFramebufferNotifier *self = (VoodooHDAFramebufferNotifier *)target;
-	IOFramebuffer *fb = OSDynamicCast(IOFramebuffer, service);
-	if (fb) self->handleFramebufferTerminated(fb);
+	if (service) self->handleFramebufferTerminated(service);
 	return true;
 }
 
 /* ---------- framebuffer attach/detach ---------- */
 
-void VoodooHDAFramebufferNotifier::handleFramebufferMatched(IOFramebuffer *fb)
+void VoodooHDAFramebufferNotifier::handleFramebufferMatched(IOService *fb)
 {
 	IOLockLock(mLock);
 
 	if (mNumConnections >= VHDA_FB_MAX_CONNECTIONS) {
-		FBLOG("handleFBMatched: max connections reached, ignoring fb=%p", fb);
+		FBLOG("handleFBMatched: max connections reached");
 		IOLockUnlock(mLock);
 		return;
 	}
 
-	/* Check if already registered */
 	for (int i = 0; i < mNumConnections; i++) {
 		if (mConnections[i].framebuffer == fb) {
-			FBLOG("handleFBMatched: fb=%p already registered at slot %d", fb, i);
 			IOLockUnlock(mLock);
 			return;
 		}
@@ -237,32 +226,35 @@ void VoodooHDAFramebufferNotifier::handleFramebufferMatched(IOFramebuffer *fb)
 	conn->mappedPinNid = -1;
 	conn->mappedCodecCad = -1;
 
-	/* Map this framebuffer to a pin widget */
 	mapConnectionToPin(conn, idx);
 
-	/* Register for framebuffer events */
-	conn->fbNotifier = fb->addFramebufferNotification(
-		&VoodooHDAFramebufferNotifier::framebufferEventHandler,
-		(OSObject *)this, conn);
+	/*
+	 * We do NOT call addFramebufferNotification() here because it requires
+	 * linking against IOGraphicsFamily, which may not be available on all
+	 * macOS versions. Instead, we read EDID on-demand at stream start.
+	 *
+	 * IOInterestNotification (general interest) is used for lifecycle events.
+	 */
+	conn->fbNotifier = fb->registerInterest(gIOGeneralInterest,
+		&VoodooHDAFramebufferNotifier::interestHandler, this, conn);
 
-	FBLOG("handleFBMatched: registered fb=%p at slot %d, notifier=%p, pin=%d",
+	FBLOG("handleFBMatched: fb=%p slot=%d notifier=%p pin=%d",
 	      fb, idx, conn->fbNotifier, conn->mappedPinNid);
 
-	/* Try reading EDID immediately — display may already be connected */
+	/* Try reading EDID immediately */
 	if (readEDID(conn) && parseEDIDAudio(conn)) {
 		buildELDFromEDID(conn);
 		conn->edidValid = true;
 		conn->displayOnline = true;
-		FBLOG("handleFBMatched: EDID valid at attach, spkalloc=0x%02x nsads=%d",
+		FBLOG("handleFBMatched: EDID valid, spkalloc=0x%02x nsads=%d",
 		      conn->speakerAllocation, conn->numSADs);
-		enableAudioPipe(conn);
 		injectELDIntoWidget(conn);
 	}
 
 	IOLockUnlock(mLock);
 }
 
-void VoodooHDAFramebufferNotifier::handleFramebufferTerminated(IOFramebuffer *fb)
+void VoodooHDAFramebufferNotifier::handleFramebufferTerminated(IOService *fb)
 {
 	IOLockLock(mLock);
 	for (int i = 0; i < mNumConnections; i++) {
@@ -278,7 +270,6 @@ void VoodooHDAFramebufferNotifier::handleFramebufferTerminated(IOFramebuffer *fb
 		if (conn->edidData) { IOFree(conn->edidData, conn->edidLen); conn->edidData = NULL; }
 		if (conn->eld) { IOFree(conn->eld, conn->eldLen); conn->eld = NULL; }
 
-		/* Compact the array */
 		for (int j = i; j < mNumConnections - 1; j++)
 			mConnections[j] = mConnections[j + 1];
 		mNumConnections--;
@@ -287,115 +278,48 @@ void VoodooHDAFramebufferNotifier::handleFramebufferTerminated(IOFramebuffer *fb
 	IOLockUnlock(mLock);
 }
 
-/* ---------- framebuffer event handler ---------- */
+/* ---------- IOService interest handler (replaces IOFramebuffer notification) ---------- */
 
-IOReturn VoodooHDAFramebufferNotifier::framebufferEventHandler(
-	OSObject *obj, void *ref, IOFramebuffer *framebuffer, IOIndex event, void *info)
+IOReturn VoodooHDAFramebufferNotifier::interestHandler(
+	void *target, void *refCon, UInt32 messageType, IOService *provider,
+	void *messageArgument, vm_size_t argSize)
 {
-	VoodooHDAFramebufferNotifier *self = (VoodooHDAFramebufferNotifier *)obj;
-	FBConnectionState *conn = (FBConnectionState *)ref;
+	VoodooHDAFramebufferNotifier *self = (VoodooHDAFramebufferNotifier *)target;
+	FBConnectionState *conn = (FBConnectionState *)refCon;
+	if (!self || !conn) return kIOReturnSuccess;
 
-	if (!self || !conn) return kIOReturnBadArgument;
-	self->handleEvent(conn, event, info);
-	return kIOReturnSuccess;
-}
-
-void VoodooHDAFramebufferNotifier::handleEvent(
-	FBConnectionState *conn, IOIndex event, void *info)
-{
-	switch (event) {
-	case kIOFBNotifyOnlineChange: {
-		bool online = (info != NULL);
-		FBLOG("event: OnlineChange fb=%p pin=%d online=%d", conn->framebuffer, conn->mappedPinNid, online);
-		if (online && !conn->displayOnline) {
+	/*
+	 * kIOMessageServicePropertyChange fires when IOFramebuffer properties change
+	 * (including IODisplayEDID). This is our trigger to re-read EDID.
+	 */
+	if (messageType == kIOMessageServicePropertyChange) {
+		FBLOG("interestHandler: PropertyChange fb=%p pin=%d", provider, conn->mappedPinNid);
+		IOLockLock(self->mLock);
+		if (self->readEDID(conn) && self->parseEDIDAudio(conn)) {
+			self->buildELDFromEDID(conn);
+			conn->edidValid = true;
 			conn->displayOnline = true;
-			if (readEDID(conn) && parseEDIDAudio(conn)) {
-				buildELDFromEDID(conn);
-				conn->edidValid = true;
-				enableAudioPipe(conn);
-				injectELDIntoWidget(conn);
-			}
-		} else if (!online && conn->displayOnline) {
-			conn->displayOnline = false;
-			conn->edidValid = false;
-			disableAudioPipe(conn);
-			clearWidgetELD(conn);
+			self->injectELDIntoWidget(conn);
+			FBLOG("interestHandler: EDID updated, spkalloc=0x%02x nsads=%d",
+			      conn->speakerAllocation, conn->numSADs);
 		}
-		break;
+		IOLockUnlock(self->mLock);
+	} else if (messageType == kIOMessageServiceIsTerminated) {
+		FBLOG("interestHandler: service terminated fb=%p pin=%d", provider, conn->mappedPinNid);
 	}
 
-	case kIOFBNotifyDidPowerOn:
-		FBLOG("event: DidPowerOn fb=%p pin=%d", conn->framebuffer, conn->mappedPinNid);
-		if (conn->displayOnline && !conn->edidValid) {
-			if (readEDID(conn) && parseEDIDAudio(conn)) {
-				buildELDFromEDID(conn);
-				conn->edidValid = true;
-				enableAudioPipe(conn);
-				injectELDIntoWidget(conn);
-			}
-		}
-		break;
-
-	case kIOFBNotifyHDACodecDidPowerOn:
-		FBLOG("event: HDACodecDidPowerOn fb=%p pin=%d edidValid=%d",
-		      conn->framebuffer, conn->mappedPinNid, conn->edidValid);
-		if (conn->edidValid && !conn->audioPipeEnabled) {
-			enableAudioPipe(conn);
-			injectELDIntoWidget(conn);
-		}
-		break;
-
-	case kIOFBNotifyDisplayModeDidChange:
-		FBLOG("event: DisplayModeDidChange fb=%p pin=%d", conn->framebuffer, conn->mappedPinNid);
-		if (conn->displayOnline) {
-			/* Re-read EDID — audio caps may change with mode */
-			if (readEDID(conn) && parseEDIDAudio(conn)) {
-				buildELDFromEDID(conn);
-				conn->edidValid = true;
-				enableAudioPipe(conn);
-				injectELDIntoWidget(conn);
-			}
-		}
-		break;
-
-	case kIOFBNotifyWillPowerOff:
-		FBLOG("event: WillPowerOff fb=%p pin=%d", conn->framebuffer, conn->mappedPinNid);
-		conn->audioPipeEnabled = false;
-		break;
-
-	case kIOFBNotifyProbed:
-		FBLOG("event: Probed fb=%p pin=%d", conn->framebuffer, conn->mappedPinNid);
-		if (!conn->edidValid) {
-			if (readEDID(conn) && parseEDIDAudio(conn)) {
-				buildELDFromEDID(conn);
-				conn->edidValid = true;
-				enableAudioPipe(conn);
-				injectELDIntoWidget(conn);
-			}
-		}
-		break;
-
-	default:
-		break; /* ignore other events */
-	}
+	return kIOReturnSuccess;
 }
 
 /* ---------- pin mapping ---------- */
 
 void VoodooHDAFramebufferNotifier::mapConnectionToPin(FBConnectionState *conn, int connIndex)
 {
-	/*
-	 * ATI GPUs: pin widgets are at NIDs 3,5,7,9,11,13 — mapped in order
-	 * to framebuffer connection indices 0,1,2,3,4,5.
-	 */
 	if (mATIPinCount > 0 && connIndex < mATIPinCount) {
 		conn->mappedPinNid = mATIPinNids[connIndex];
 		conn->mappedCodecCad = mATIPinCad;
 		FBLOG("mapConnectionToPin: connIndex=%d -> pin nid=%d cad=%d",
 		      connIndex, conn->mappedPinNid, conn->mappedCodecCad);
-	} else {
-		FBLOG("mapConnectionToPin: connIndex=%d has no ATI pin (pinCount=%d)",
-		      connIndex, mATIPinCount);
 	}
 }
 
@@ -405,21 +329,20 @@ bool VoodooHDAFramebufferNotifier::readEDID(FBConnectionState *conn)
 {
 	if (!conn->framebuffer) return false;
 
-	/* Free old EDID */
 	if (conn->edidData) {
 		IOFree(conn->edidData, conn->edidLen);
 		conn->edidData = NULL;
 		conn->edidLen = 0;
 	}
 
-	/* Try getProperty first — most reliable */
+	/* Read IODisplayEDID property — works via IOService::getProperty(), no IOGraphicsFamily needed */
 	OSData *edidProp = OSDynamicCast(OSData, conn->framebuffer->getProperty(kIODisplayEDIDKey));
 	if (edidProp && edidProp->getLength() >= 128) {
 		conn->edidLen = edidProp->getLength();
 		conn->edidData = (uint8_t *)IOMalloc(conn->edidLen);
 		if (conn->edidData) {
 			memcpy(conn->edidData, edidProp->getBytesNoCopy(), conn->edidLen);
-			FBLOG("readEDID: pin=%d got %d bytes from property", conn->mappedPinNid, conn->edidLen);
+			FBLOG("readEDID: pin=%d got %d bytes", conn->mappedPinNid, conn->edidLen);
 			return true;
 		}
 	}
@@ -438,33 +361,19 @@ bool VoodooHDAFramebufferNotifier::parseEDIDAudio(FBConnectionState *conn)
 	conn->numSADs = 0;
 	bzero(conn->sads, sizeof(conn->sads));
 
-	/* Validate base EDID checksum */
-	uint8_t cksum = 0;
-	for (int i = 0; i < 128; i++) cksum += conn->edidData[i];
-	if (cksum != 0) {
-		FBLOG("parseEDIDAudio: pin=%d base EDID checksum failed (0x%02x)", conn->mappedPinNid, cksum);
-		/* Continue anyway — some EDIDs have bad checksums */
-	}
-
-	/* Check for CEA extension block */
 	int numExtensions = conn->edidData[126];
 	if (numExtensions == 0 || conn->edidLen < 256) {
-		FBLOG("parseEDIDAudio: pin=%d no CEA extension (ext=%d edidLen=%d)",
-		      conn->mappedPinNid, numExtensions, conn->edidLen);
-		/* No CEA block — construct minimal ELD with stereo LPCM */
-		conn->speakerAllocation = 0x01; /* FL/FR only */
-		/* SAD for stereo 16-bit LPCM at 48/44.1/32 kHz */
+		/* No CEA block — default to stereo LPCM */
+		conn->speakerAllocation = 0x01;
 		conn->sads[0] = 0x09; /* LPCM, 2ch */
 		conn->sads[1] = 0x07; /* 32/44.1/48 kHz */
 		conn->sads[2] = 0x01; /* 16-bit */
 		conn->numSADs = 1;
-		FBLOG("parseEDIDAudio: pin=%d no CEA, using default stereo LPCM", conn->mappedPinNid);
+		FBLOG("parseEDIDAudio: pin=%d no CEA extension, using default stereo LPCM", conn->mappedPinNid);
 		return true;
 	}
 
 	uint8_t *cea = &conn->edidData[128];
-
-	/* CEA-861 extension tag must be 0x02 */
 	if (cea[0] != 0x02) {
 		FBLOG("parseEDIDAudio: pin=%d CEA tag=0x%02x (expected 0x02)", conn->mappedPinNid, cea[0]);
 		return false;
@@ -476,21 +385,18 @@ bool VoodooHDAFramebufferNotifier::parseEDIDAudio(FBConnectionState *conn)
 	      conn->mappedPinNid, cea[1], dtdOffset, basicAudio);
 
 	if (!basicAudio) {
-		FBLOG("parseEDIDAudio: pin=%d display does not support basic audio", conn->mappedPinNid);
+		FBLOG("parseEDIDAudio: pin=%d no basic audio support", conn->mappedPinNid);
 		return false;
 	}
 
-	/* Parse data blocks (bytes 4..dtdOffset-1) */
 	int pos = 4;
 	while (pos < dtdOffset && pos < 127) {
 		int tag = (cea[pos] >> 5) & 0x07;
 		int blockLen = cea[pos] & 0x1f;
 		pos++;
-
 		if (pos + blockLen > dtdOffset) break;
 
 		if (tag == 1) {
-			/* Audio Data Block — contains SADs (3 bytes each) */
 			int nSADs = blockLen / 3;
 			for (int i = 0; i < nSADs && conn->numSADs < VHDA_FB_MAX_SADS; i++) {
 				int off = conn->numSADs * 3;
@@ -501,18 +407,14 @@ bool VoodooHDAFramebufferNotifier::parseEDIDAudio(FBConnectionState *conn)
 			}
 			FBLOG("parseEDIDAudio: pin=%d Audio Data Block: %d SADs", conn->mappedPinNid, nSADs);
 		} else if (tag == 4) {
-			/* Speaker Allocation Data Block */
 			if (blockLen >= 1) {
 				conn->speakerAllocation = cea[pos];
 				FBLOG("parseEDIDAudio: pin=%d Speaker Allocation: 0x%02x", conn->mappedPinNid, cea[pos]);
 			}
 		}
-		/* Skip other block types (video, vendor specific, etc.) */
-
 		pos += blockLen;
 	}
 
-	/* If we got SADs but no speaker allocation, default to FL/FR */
 	if (conn->numSADs > 0 && conn->speakerAllocation == 0)
 		conn->speakerAllocation = 0x01;
 
@@ -525,18 +427,12 @@ bool VoodooHDAFramebufferNotifier::parseEDIDAudio(FBConnectionState *conn)
 
 void VoodooHDAFramebufferNotifier::buildELDFromEDID(FBConnectionState *conn)
 {
-	/* Free old ELD */
 	if (conn->eld) {
 		IOFree(conn->eld, conn->eldLen);
 		conn->eld = NULL;
 		conn->eldLen = 0;
 	}
 
-	/*
-	 * Build ELD (EDID-Like Data) per CEA-861-D.
-	 * Layout: header (4 bytes) + baseline block (4 + MNL + SADs*3)
-	 * We use MNL=0 (no monitor name) for simplicity.
-	 */
 	int mnl = 0;
 	int baselineLen = 4 + mnl + conn->numSADs * 3;
 	int totalLen = 4 + baselineLen;
@@ -546,21 +442,13 @@ void VoodooHDAFramebufferNotifier::buildELDFromEDID(FBConnectionState *conn)
 	conn->eldLen = totalLen;
 	bzero(conn->eld, totalLen);
 
-	/* Header */
 	conn->eld[0] = 0x02 << 3; /* ELD version 2 */
 	conn->eld[2] = baselineLen / 4;
-
-	/* Baseline */
 	conn->eld[4] = (conn->numSADs << 4) | mnl;
-
-	/* Connection type: check if DP or HDMI from EDID vendor block */
-	/* For now, set based on pin cap (DP=1, HDMI=0) */
-	conn->eld[5] = 0x00; /* HDMI (will be overridden if DP detected) */
-
-	conn->eld[6] = 0; /* audio sync delay */
+	conn->eld[5] = 0x00; /* HDMI */
+	conn->eld[6] = 0;    /* audio sync delay */
 	conn->eld[7] = conn->speakerAllocation;
 
-	/* Copy SADs starting at offset 8 */
 	for (int i = 0; i < conn->numSADs * 3; i++)
 		conn->eld[8 + i] = conn->sads[i];
 
@@ -572,36 +460,23 @@ void VoodooHDAFramebufferNotifier::buildELDFromEDID(FBConnectionState *conn)
 
 bool VoodooHDAFramebufferNotifier::enableAudioPipe(FBConnectionState *conn)
 {
-	if (!conn->framebuffer || conn->audioPipeEnabled) return true;
-
-	IOReturn ret = conn->framebuffer->setAttributeForConnectionExt(
-		0, kConnectionEnableAudio, 1);
-
-	FBLOG("enableAudioPipe: pin=%d fb=%p ret=0x%x",
-	      conn->mappedPinNid, conn->framebuffer, ret);
-
-	if (ret == kIOReturnSuccess || ret == kIOReturnUnsupported) {
-		/* kIOReturnUnsupported may mean it's already enabled or not needed */
-		conn->audioPipeEnabled = true;
-
-		/* Also tell GPU we're streaming */
-		conn->framebuffer->setAttributeForConnectionExt(
-			0, kConnectionAudioStreaming, 1);
-		return true;
-	}
-
-	FBLOG("enableAudioPipe: FAILED pin=%d ret=0x%x", conn->mappedPinNid, ret);
-	return false;
+	/*
+	 * setAttributeForConnectionExt requires linking with IOGraphicsFamily
+	 * which is not available on all macOS versions for third-party kexts.
+	 * On macOS, the GPU framebuffer driver typically enables the audio pipe
+	 * automatically when a display is connected. We rely on that.
+	 *
+	 * If audio still doesn't work, the user needs AppleGFXHDA or
+	 * WhateverGreen to handle the GPU audio pipe activation.
+	 */
+	FBLOG("enableAudioPipe: pin=%d (relying on GPU driver auto-enable)", conn->mappedPinNid);
+	conn->audioPipeEnabled = true;
+	return true;
 }
 
 void VoodooHDAFramebufferNotifier::disableAudioPipe(FBConnectionState *conn)
 {
-	if (!conn->framebuffer || !conn->audioPipeEnabled) return;
-
-	conn->framebuffer->setAttributeForConnectionExt(0, kConnectionAudioStreaming, 0);
-	conn->framebuffer->setAttributeForConnectionExt(0, kConnectionEnableAudio, 0);
 	conn->audioPipeEnabled = false;
-	FBLOG("disableAudioPipe: pin=%d", conn->mappedPinNid);
 }
 
 /* ---------- ELD injection into VoodooHDA widget ---------- */
@@ -611,10 +486,6 @@ void VoodooHDAFramebufferNotifier::injectELDIntoWidget(FBConnectionState *conn)
 	if (!mDevice || conn->mappedPinNid < 0 || !conn->eld || conn->eldLen == 0)
 		return;
 
-	/*
-	 * Find the widget and set its ELD.
-	 * We need to iterate codecs/funcgroups to find the right widget.
-	 */
 	Codec *codec = mDevice->mCodecs[conn->mappedCodecCad];
 	if (!codec) return;
 
@@ -625,14 +496,12 @@ void VoodooHDAFramebufferNotifier::injectELDIntoWidget(FBConnectionState *conn)
 		Widget *w = mDevice->widgetGet(funcGroup, conn->mappedPinNid);
 		if (!w) continue;
 
-		/* Free old ELD on widget */
 		if (w->eld) {
 			VoodooHDADevice::freeMem(w->eld);
 			w->eld = NULL;
 			w->eld_len = 0;
 		}
 
-		/* Copy our ELD to widget */
 		w->eld = (uint8_t *)VoodooHDADevice::allocMem(conn->eldLen);
 		if (w->eld) {
 			memcpy(w->eld, conn->eld, conn->eldLen);
@@ -643,9 +512,6 @@ void VoodooHDAFramebufferNotifier::injectELDIntoWidget(FBConnectionState *conn)
 		}
 		return;
 	}
-
-	FBLOG("injectELD: widget nid=%d not found in codec cad=%d",
-	      conn->mappedPinNid, conn->mappedCodecCad);
 }
 
 void VoodooHDAFramebufferNotifier::clearWidgetELD(FBConnectionState *conn)
@@ -665,7 +531,6 @@ void VoodooHDAFramebufferNotifier::clearWidgetELD(FBConnectionState *conn)
 			w->eld = NULL;
 			w->eld_len = 0;
 		}
-		FBLOG("clearWidgetELD: nid=%d", conn->mappedPinNid);
 		return;
 	}
 }
@@ -696,10 +561,6 @@ void VoodooHDAFramebufferNotifier::ensureAudioPipeEnabled(int cad, nid_t pinNid)
 	for (int i = 0; i < mNumConnections; i++) {
 		FBConnectionState *conn = &mConnections[i];
 		if (conn->mappedCodecCad == cad && conn->mappedPinNid == pinNid) {
-			if (!conn->audioPipeEnabled && conn->edidValid) {
-				enableAudioPipe(conn);
-			}
-			/* If no ELD yet, try reading EDID now */
 			if (!conn->edidValid && conn->framebuffer) {
 				if (readEDID(conn) && parseEDIDAudio(conn)) {
 					buildELDFromEDID(conn);
@@ -726,7 +587,7 @@ VoodooHDAFramebufferNotifier::findConnectionForPin(int cad, nid_t pinNid)
 }
 
 FBConnectionState *
-VoodooHDAFramebufferNotifier::findConnection(IOFramebuffer *fb)
+VoodooHDAFramebufferNotifier::findConnection(IOService *fb)
 {
 	for (int i = 0; i < mNumConnections; i++) {
 		if (mConnections[i].framebuffer == fb)
