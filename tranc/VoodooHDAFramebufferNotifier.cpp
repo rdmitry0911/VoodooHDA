@@ -34,6 +34,7 @@ bool VoodooHDAFramebufferNotifier::init(VoodooHDADevice *device)
 	mDevice = device;
 	mGFXMatchNotifier = NULL;
 	mGFXTermNotifier = NULL;
+	mDisplayMatchNotifier = NULL;
 	mNumConnections = 0;
 	mATIPinCount = 0;
 	mATIPinCad = -1;
@@ -107,6 +108,18 @@ void VoodooHDAFramebufferNotifier::startMatching()
 			&VoodooHDAFramebufferNotifier::gfxTerminatedHandler,
 			this, NULL, 0);
 	}
+
+	/*
+	 * IODisplay is created AFTER IOFramebuffer and carries the IODisplayEDID
+	 * property.  Listen for it separately so we can read EDID when it appears.
+	 */
+	matchDict = IOService::serviceMatching("IODisplay");
+	if (matchDict) {
+		mDisplayMatchNotifier = IOService::addMatchingNotification(
+			gIOMatchedNotification, matchDict,
+			&VoodooHDAFramebufferNotifier::displayMatchedHandler,
+			this, NULL, 0);
+	}
 }
 
 void VoodooHDAFramebufferNotifier::stopMatching()
@@ -138,6 +151,10 @@ void VoodooHDAFramebufferNotifier::stopMatching()
 	if (mGFXTermNotifier) {
 		mGFXTermNotifier->remove();
 		mGFXTermNotifier = NULL;
+	}
+	if (mDisplayMatchNotifier) {
+		mDisplayMatchNotifier->remove();
+		mDisplayMatchNotifier = NULL;
 	}
 	FBLOG("stopMatching: all notifiers removed");
 }
@@ -197,6 +214,53 @@ bool VoodooHDAFramebufferNotifier::gfxTerminatedHandler(
 {
 	VoodooHDAFramebufferNotifier *self = (VoodooHDAFramebufferNotifier *)target;
 	if (service) self->handleFramebufferTerminated(service);
+	return true;
+}
+
+bool VoodooHDAFramebufferNotifier::displayMatchedHandler(
+	void *target, void *refCon, IOService *newService, IONotifier *notifier)
+{
+	VoodooHDAFramebufferNotifier *self = (VoodooHDAFramebufferNotifier *)target;
+	if (!newService) return true;
+
+	OSData *edidProp = OSDynamicCast(OSData, newService->getProperty(kIODisplayEDIDKey));
+	if (!edidProp || edidProp->getLength() < 128) return true;
+
+	/*
+	 * Walk up: IODisplay -> IODisplayConnect -> IOFramebuffer
+	 * Match the IOFramebuffer to one of our registered connections.
+	 */
+	IOService *parent = newService->getProvider();           /* IODisplayConnect */
+	IOService *fb = parent ? parent->getProvider() : NULL;   /* IOFramebuffer   */
+	if (!fb) return true;
+
+	IOLockLock(self->mLock);
+	FBConnectionState *conn = self->findConnection(fb);
+	if (conn && !conn->edidValid) {
+		FBLOG("displayMatched: IODisplay for pin=%d, reading EDID", conn->mappedPinNid);
+
+		if (conn->edidData) {
+			IOFree(conn->edidData, conn->edidLen);
+			conn->edidData = NULL;
+		}
+		conn->edidLen = edidProp->getLength();
+		conn->edidData = (uint8_t *)IOMalloc(conn->edidLen);
+		if (conn->edidData) {
+			memcpy(conn->edidData, edidProp->getBytesNoCopy(), conn->edidLen);
+			FBLOG("displayMatched: pin=%d got %d bytes EDID", conn->mappedPinNid, conn->edidLen);
+
+			if (self->parseEDIDAudio(conn)) {
+				self->buildELDFromEDID(conn);
+				conn->edidValid = true;
+				conn->displayOnline = true;
+				self->enableAudioPipe(conn);
+				self->injectELDIntoWidget(conn);
+				FBLOG("displayMatched: pin=%d spkalloc=0x%02x nsads=%d pipe enabled",
+				      conn->mappedPinNid, conn->speakerAllocation, conn->numSADs);
+			}
+		}
+	}
+	IOLockUnlock(self->mLock);
 	return true;
 }
 

@@ -68,6 +68,7 @@ private:
 	VoodooHDADevice        *mDevice;
 	IONotifier             *mGFXMatchNotifier;
 	IONotifier             *mGFXTermNotifier;
+	IONotifier             *mDisplayMatchNotifier;
 	FBConnectionState       mConnections[VHDA_FB_MAX_CONNECTIONS];
 	int                     mNumConnections;
 	IOLock                 *mLock;
@@ -85,6 +86,8 @@ private:
 	                               IOService *newService, IONotifier *notifier);
 	static bool gfxTerminatedHandler(void *target, void *refCon,
 	                                  IOService *service, IONotifier *notifier);
+	static bool displayMatchedHandler(void *target, void *refCon,
+	                                   IOService *newService, IONotifier *notifier);
 
 	/* IOService interest notification (no IOGraphicsFamily dependency) */
 	static IOReturn interestHandler(void *target, void *refCon,
