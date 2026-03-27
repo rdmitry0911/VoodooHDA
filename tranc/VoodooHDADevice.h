@@ -69,6 +69,7 @@ typedef struct _sliderTab{
 }sliderTab;
 
 class VoodooHDAEngine;
+class VoodooHDAFramebufferNotifier;
 
 class IOPCIDevice;
 class IOFilterInterruptEventSource;
@@ -424,6 +425,9 @@ public:
 	/*********************/
 	void initMixerDefaultValues(void);
 	void disablePCIeNoSnoop(UInt16 vendorId);
+
+	/* Framebuffer notifier for AMD HDMI audio */
+	VoodooHDAFramebufferNotifier *mFBNotifier;
 };
 
 #endif

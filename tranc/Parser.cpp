@@ -1,6 +1,7 @@
 #include "License.h"
 
 #include "VoodooHDADevice.h"
+#include "VoodooHDAFramebufferNotifier.h"
 #include "VoodooHDAEngine.h"
 #include "Private.h"
 #include "Tables.h"
@@ -4901,6 +4902,23 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
   if (HDA_PARAM_PIN_CAP_PRESENCE_DETECT_CAP(widget->pin.cap) == 0 ||
       (HDA_CONFIG_DEFAULTCONF_MISC(widget->pin.config) & 1) != 0)
     return;
+
+  /* Check framebuffer-sourced ELD first (ATI codecs on macOS) */
+  if (mFBNotifier) {
+    uint8_t *fbELD = NULL;
+    int fbELDLen = 0;
+    if (mFBNotifier->getFramebufferELD(cad, nid, &fbELD, &fbELDLen) && fbELDLen > 0) {
+      if (widget->eld) { freeMem(widget->eld); widget->eld = NULL; widget->eld_len = 0; }
+      widget->eld = (uint8_t *)allocMem(fbELDLen);
+      if (widget->eld) {
+        memcpy(widget->eld, fbELD, fbELDLen);
+        widget->eld_len = fbELDLen;
+        IOLog("VoodooHDA HDMI: nid=%d using FRAMEBUFFER ELD (%d bytes, spkalloc=0x%02x)\n",
+              nid, fbELDLen, (fbELDLen > 7) ? widget->eld[7] : 0);
+        return;
+      }
+    }
+  }
 
   res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, nid), cad);
   bool atiCodec = isAtiHdmiCodec(widget->funcGroup->codec);

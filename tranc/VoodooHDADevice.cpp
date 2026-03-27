@@ -1,6 +1,7 @@
 #include "License.h"
 
 #include "VoodooHDADevice.h"
+#include "VoodooHDAFramebufferNotifier.h"
 #include "VoodooHDAEngine.h"
 #include "Tables.h"
 #include "Models.h"
@@ -53,6 +54,7 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	OSBoolean *osBool;
 	extern kmod_info_t kmod_info;
 	mVerbose = 0;
+	mFBNotifier = NULL;
 	IOLog("VoodooHDA DBG: init() called, dict=%p\n", dict);
 	if (!super::init(dict)) {
 		IOLog("VoodooHDA DBG: super::init() FAILED\n");
@@ -617,6 +619,36 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 				codec->vendorId, codec->deviceId);
 	}
 
+	/* Create framebuffer notifier for ATI HDMI codecs */
+	for (int n = 0; n < HDAC_CODEC_MAX; n++) {
+		Codec *codec = mCodecs[n];
+		if (!codec || !isAtiHdmiCodec(codec))
+			continue;
+		if (!mFBNotifier)
+			mFBNotifier = VoodooHDAFramebufferNotifier::withDevice(this);
+		if (mFBNotifier) {
+			nid_t pins[VHDA_FB_MAX_PINS];
+			int pinCount = 0;
+			for (int fg = 0; fg < codec->numFuncGroups; fg++) {
+				FunctionGroup *funcGroup = &codec->funcGroups[fg];
+				if (funcGroup->nodeType != HDA_PARAM_FCT_GRP_TYPE_NODE_TYPE_AUDIO)
+					continue;
+				for (int w = 0; w < funcGroup->numNodes; w++) {
+					Widget *widget = &funcGroup->widgets[w];
+					if (widget->enable && widget->type == HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX &&
+						(HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) || HDA_PARAM_PIN_CAP_DP(widget->pin.cap)) &&
+						pinCount < VHDA_FB_MAX_PINS)
+						pins[pinCount++] = widget->nid;
+				}
+			}
+			if (pinCount > 0) {
+				mFBNotifier->registerATIPins(codec->cad, pins, pinCount);
+				mFBNotifier->startMatching();
+				IOLog("VoodooHDA HDMI: framebuffer notifier started for %d ATI pins\n", pinCount);
+			}
+		}
+	}
+
 	if (!mNumChannels) {
 		errorMsg("error: no PCM channels found\n");
 		goto done;
@@ -659,6 +691,12 @@ done:
 void VoodooHDADevice::stop(IOService *provider)
 {
 	logMsg("VoodooHDADevice[%p]::stop\n", this);
+
+	if (mFBNotifier) {
+		mFBNotifier->stopMatching();
+		mFBNotifier->release();
+		mFBNotifier = NULL;
+	}
 
 	disableEventSources();
 
@@ -2827,9 +2865,12 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 		 */
 
 		/*
-		 * Re-read ELD at stream start time.
+		 * Ensure GPU audio pipe is enabled and re-read ELD at stream start.
 		 * GPU driver may have programmed ELD after our initial read at boot.
 		 */
+		if (atiCodec && mFBNotifier)
+			mFBNotifier->ensureAudioPipeEnabled(cad, nid_pin);
+
 		IOLog("VoodooHDA HDMI: streamSetup nid_pin=%d dac=%d eld_len=%d (before re-read) pinCap=0x%08x\n",
 			  nid_pin, dac, widget_pin->eld_len, (unsigned)widget_pin->pin.cap);
 		hdaa_eld_handler(widget_pin);
