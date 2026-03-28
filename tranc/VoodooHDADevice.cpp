@@ -2511,6 +2511,9 @@ UInt32 VoodooHDADevice::audioCtlOssMixerSetRecSrc(PcmDevice *pcmDevice, UInt32 s
 
 //		logMsg("VoodooHDADevice[%p]::audioCtlOssMixerSetRecSrc(%p, 0x%lx)\n", this, pcmDevice, src);
 
+	if (pcmDevice->recChanId < 0 || pcmDevice->recChanId >= mNumChannels)
+		return 0;
+
 	LOCK();
 
 	/* Commutate requested recsrc for each ADC. */
