@@ -1,5 +1,6 @@
 #include "License.h"
 
+#include "GitCommit.h"
 #include "VoodooHDADevice.h"
 #include "VoodooHDAFramebufferNotifier.h"
 #include "VoodooHDAEngine.h"
@@ -62,7 +63,7 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 		IOLog("VoodooHDA DBG: super::init() FAILED\n");
 		return false;
 	}
-	IOLog("VoodooHDA DBG: super::init() OK, version=%s\n", kmod_info.version);
+	IOLog("VoodooHDA DBG: super::init() OK, version=%s commit=" VOODOO_HDA_GIT_COMMIT "\n", kmod_info.version);
 
 	dumpMsg("Loading VoodooHDA %s (based on hdac version " HDAC_REVISION ")\n", kmod_info.version);
 	
