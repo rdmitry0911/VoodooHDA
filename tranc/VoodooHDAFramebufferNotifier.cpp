@@ -254,7 +254,16 @@ bool VoodooHDAFramebufferNotifier::displayMatchedHandler(
 				conn->edidValid = true;
 				conn->displayOnline = true;
 				self->enableAudioPipe(conn);
+
+				/*
+				 * The linear connIndex→pin mapping may be wrong — framebuffer
+				 * connIndex=0 may correspond to HDA pin=11, not pin=3.
+				 * Inject ELD into the mapped pin AND all pins with presence,
+				 * so the correct pin always gets EDID-based audio capabilities.
+				 */
 				self->injectELDIntoWidget(conn);
+				self->injectELDIntoAllPinsWithPresence(conn);
+
 				FBLOG("displayMatched: pin=%d spkalloc=0x%02x nsads=%d pipe enabled",
 				      conn->mappedPinNid, conn->speakerAllocation, conn->numSADs);
 			}
@@ -620,6 +629,48 @@ void VoodooHDAFramebufferNotifier::injectELDIntoWidget(FBConnectionState *conn)
 			FBLOG("injectELD: nid=%d eld_len=%d spkalloc=0x%02x",
 			      conn->mappedPinNid, w->eld_len,
 			      (w->eld_len > 7) ? w->eld[7] : 0);
+		}
+		return;
+	}
+}
+
+void VoodooHDAFramebufferNotifier::injectELDIntoAllPinsWithPresence(FBConnectionState *conn)
+{
+	if (!mDevice || !conn->eld || conn->eldLen == 0 || mATIPinCad < 0)
+		return;
+
+	Codec *codec = mDevice->mCodecs[mATIPinCad];
+	if (!codec) return;
+
+	for (int fg = 0; fg < codec->numFuncGroups; fg++) {
+		FunctionGroup *funcGroup = &codec->funcGroups[fg];
+		if (funcGroup->nodeType != HDA_PARAM_FCT_GRP_TYPE_NODE_TYPE_AUDIO)
+			continue;
+
+		for (int i = 0; i < mATIPinCount; i++) {
+			nid_t nid = mATIPinNids[i];
+			if (nid == conn->mappedPinNid) continue; /* already injected by injectELDIntoWidget */
+
+			UInt32 pinSense = mDevice->sendCommand(
+				HDA_CMD_GET_PIN_SENSE(mATIPinCad, nid), mATIPinCad);
+			if (!(pinSense & (1U << 31))) continue; /* no presence */
+
+			Widget *w = mDevice->widgetGet(funcGroup, nid);
+			if (!w) continue;
+
+			if (w->eld) {
+				VoodooHDADevice::freeMem(w->eld);
+				w->eld = NULL;
+				w->eld_len = 0;
+			}
+
+			w->eld = (uint8_t *)VoodooHDADevice::allocMem(conn->eldLen);
+			if (w->eld) {
+				memcpy(w->eld, conn->eld, conn->eldLen);
+				w->eld_len = conn->eldLen;
+				FBLOG("injectELD(presence): nid=%d pinSense=0x%08x eld_len=%d",
+				      nid, pinSense, w->eld_len);
+			}
 		}
 		return;
 	}

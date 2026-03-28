@@ -105,6 +105,7 @@ private:
 	bool enableAudioPipe(FBConnectionState *conn);
 	void disableAudioPipe(FBConnectionState *conn);
 	void injectELDIntoWidget(FBConnectionState *conn);
+	void injectELDIntoAllPinsWithPresence(FBConnectionState *conn);
 	void clearWidgetELD(FBConnectionState *conn);
 
 	FBConnectionState *findConnection(IOService *fb);
