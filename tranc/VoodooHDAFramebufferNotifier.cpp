@@ -315,12 +315,10 @@ void VoodooHDAFramebufferNotifier::handleFramebufferMatched(IOService *fb)
 	      fb, idx, conn->fbNotifier, conn->mappedPinNid);
 
 	/*
-	 * Enable the GPU audio pipe immediately on every framebuffer.
-	 * We don't know which physical port has the display connected —
-	 * pin presence may report a different nid than the framebuffer index.
-	 * Enabling all pipes ensures the correct one is active when audio plays.
+	 * Do NOT call enableAudioPipe here — calling setAttributeForConnection
+	 * before IODisplay exists can disrupt the display pipeline (dark screen).
+	 * Audio pipe is enabled later in displayMatchedHandler when IODisplay appears.
 	 */
-	enableAudioPipe(conn);
 
 	/* Try reading EDID immediately (usually too early — displayMatchedHandler will retry) */
 	if (readEDID(conn) && parseEDIDAudio(conn)) {
