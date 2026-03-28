@@ -579,14 +579,14 @@ bool VoodooHDAFramebufferNotifier::enableAudioPipe(FBConnectionState *conn)
 	 */
 	IOFramebuffer *fb = reinterpret_cast<IOFramebuffer *>(conn->framebuffer);
 
-	/* Enable audio on this connection — mirrors what AppleGFXHDA does */
-	IOReturn ret = fb->setAttributeForConnection(0, kConnectionEnableAudio, 1);
-	FBLOG("enableAudioPipe: pin=%d setAttributeForConnection(kConnectionEnableAudio)=%x", conn->mappedPinNid, ret);
-
-	if (ret == kIOReturnSuccess) {
-		ret = fb->setAttributeForConnection(0, kConnectionAudioStreaming, 1);
-		FBLOG("enableAudioPipe: pin=%d setAttributeForConnection(kConnectionAudioStreaming)=%x", conn->mappedPinNid, ret);
-	}
+	/*
+	 * AppleGFXHDA uses setAttributeForConnectionExt (non-virtual, acquires
+	 * IOFramebuffer lock) — NOT setAttributeForConnection (virtual, no lock).
+	 * Calling the virtual version bypasses the lock and corrupts display state.
+	 * AppleGFXHDA only uses kConnectionEnableAudio, never kConnectionAudioStreaming.
+	 */
+	IOReturn ret = fb->setAttributeForConnectionExt(0, kConnectionEnableAudio, 1);
+	FBLOG("enableAudioPipe: pin=%d setAttributeForConnectionExt(kConnectionEnableAudio)=%x", conn->mappedPinNid, ret);
 
 	conn->audioPipeEnabled = (ret == kIOReturnSuccess);
 	return conn->audioPipeEnabled;
@@ -742,28 +742,14 @@ void VoodooHDAFramebufferNotifier::clearWidgetELD(FBConnectionState *conn)
 
 void VoodooHDAFramebufferNotifier::notifyStreamingState(int cad, nid_t pinNid, bool streaming)
 {
-	IOLockLock(mLock);
-
 	/*
-	 * Find any connection with an active display (edidValid) and call
-	 * setAttributeForConnection(kConnectionAudioStreaming) on its framebuffer.
-	 * The framebuffer-to-pin mapping may not match linearly, but the
-	 * framebuffer with IODisplay IS the physical port with the monitor —
-	 * telling it to start/stop audio streaming enables the Audio InfoFrame
-	 * in the GPU's HDMI transmitter.
+	 * AppleGFXHDA does NOT call any framebuffer attribute at stream start/stop.
+	 * Audio pipe is enabled once via setAttributeForConnectionExt(kConnectionEnableAudio)
+	 * during display init.  The GPU handles InfoFrame encoding automatically.
 	 */
-	for (int i = 0; i < mNumConnections; i++) {
-		FBConnectionState *conn = &mConnections[i];
-		if (!conn->framebuffer || !conn->audioPipeEnabled) continue;
-
-		IOFramebuffer *fb = reinterpret_cast<IOFramebuffer *>(conn->framebuffer);
-		IOReturn ret = fb->setAttributeForConnection(0, kConnectionAudioStreaming, streaming ? 1 : 0);
-		FBLOG("notifyStreamingState: pin=%d streaming=%d conn=%d ret=0x%x",
-		      pinNid, streaming, i, ret);
-		if (ret == kIOReturnSuccess) break;
-	}
-
-	IOLockUnlock(mLock);
+	(void)cad;
+	(void)pinNid;
+	(void)streaming;
 }
 
 /* ---------- public query interface ---------- */
