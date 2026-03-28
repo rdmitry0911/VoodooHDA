@@ -3042,6 +3042,27 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 			}
 
 			logMsg("ATI HDMI verb path: nid=%d ca=0x%02x totalchn=%d\n", nid_pin, ca, totalchn);
+
+			/*
+			 * AppleGFXHDA always sends standard HDA channel slots (0x734) and
+			 * enables DIP transmission (0x732=0xc0) even on ATI codecs with
+			 * DIP_SIZE=0.  Without DIP_XMIT the monitor never sees the Audio
+			 * InfoFrame and won't decode audio.
+			 */
+			for (int k = 0; k < 8; k++) {
+				UInt16 slotVerb;
+				if (k < totalchn) {
+					slotVerb = (((hdmich[totalext == 0 ? 0 : 1][totalchn - 1] >> (k * 4)) & 0xf) << 4) | k;
+				} else {
+					slotVerb = 0xf0 | k;  /* unused slot: slot=0xf, channel=k */
+				}
+				sendCommand(HDA_CMD_SET_HDMI_CHAN_SLOT(cad, nid_pin, slotVerb), cad);
+			}
+
+			/* Enable InfoFrame transmission — even with DIP_SIZE=0 */
+			sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
+			sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
+			IOLog("VoodooHDA HDMI: ATI path + standard CHAN_SLOT + DIP_XMIT=0xc0 nid=%d\n", nid_pin);
 			continue;
 		}
 
