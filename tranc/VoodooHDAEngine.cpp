@@ -526,7 +526,9 @@ bool VoodooHDAEngine::createAudioStream(IOAudioStreamDirection direction, void *
             formatEx.fBytesPerPacket = format.fNumChannels * (format.fBitWidth / 8);
             mStream->addAvailableFormat(&format, &formatEx, &sampleRate, &sampleRate);
 	}
-	if (HDA_PARAM_SUPP_PCM_SIZE_RATE_24BIT(supPcmSizeRates)) {
+	if (HDA_PARAM_SUPP_PCM_SIZE_RATE_24BIT(supPcmSizeRates) || isDigital) {
+		/* HDMI/DP spec mandates 16-24 bit PCM; force 24-bit even if codec
+		 * doesn't explicitly advertise it (ATI HDMI codecs often don't) */
 		format.fBitDepth = 24;
 		format.fBitWidth = 32;
             formatEx.fBytesPerPacket = format.fNumChannels * (format.fBitWidth / 8);

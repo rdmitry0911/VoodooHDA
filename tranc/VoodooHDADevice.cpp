@@ -398,6 +398,12 @@ IOService *VoodooHDADevice::probe(IOService *provider, SInt32 *score)
 	IOLog("VoodooHDA DBG: Controller: %s (vendor=%04x device=%04x)\n", mControllerName, vendorId, deviceId);
 	errorMsg("Controller: %s (vendor ID: %04x, device ID: %04x)\n", mControllerName, vendorId, deviceId);
 
+	/* Beat AppleGFXHDA's dynamic probe score for AMD/ATI HDMI audio.
+	 * Safe: enableAudioPipe is only called from displayMatchedHandler
+	 * when IODisplay exists, so display pipeline is not disrupted. */
+	if (vendorId == 0x1002 && score)
+		*score = 5000000;
+
 	subVendorId = mPciNub->configRead16(kIOPCIConfigSubSystemVendorID);
 	subDeviceId = mPciNub->configRead16(kIOPCIConfigSubSystemID);
 	mSubDeviceId = (subDeviceId << 16) | subVendorId;
