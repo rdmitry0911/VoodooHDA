@@ -738,6 +738,34 @@ void VoodooHDAFramebufferNotifier::clearWidgetELD(FBConnectionState *conn)
 	}
 }
 
+/* ---------- streaming state notification ---------- */
+
+void VoodooHDAFramebufferNotifier::notifyStreamingState(int cad, nid_t pinNid, bool streaming)
+{
+	IOLockLock(mLock);
+
+	/*
+	 * Find any connection with an active display (edidValid) and call
+	 * setAttributeForConnection(kConnectionAudioStreaming) on its framebuffer.
+	 * The framebuffer-to-pin mapping may not match linearly, but the
+	 * framebuffer with IODisplay IS the physical port with the monitor —
+	 * telling it to start/stop audio streaming enables the Audio InfoFrame
+	 * in the GPU's HDMI transmitter.
+	 */
+	for (int i = 0; i < mNumConnections; i++) {
+		FBConnectionState *conn = &mConnections[i];
+		if (!conn->framebuffer || !conn->audioPipeEnabled) continue;
+
+		IOFramebuffer *fb = reinterpret_cast<IOFramebuffer *>(conn->framebuffer);
+		IOReturn ret = fb->setAttributeForConnection(0, kConnectionAudioStreaming, streaming ? 1 : 0);
+		FBLOG("notifyStreamingState: pin=%d streaming=%d conn=%d ret=0x%x",
+		      pinNid, streaming, i, ret);
+		if (ret == kIOReturnSuccess) break;
+	}
+
+	IOLockUnlock(mLock);
+}
+
 /* ---------- public query interface ---------- */
 
 bool VoodooHDAFramebufferNotifier::getFramebufferELD(

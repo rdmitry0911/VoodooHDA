@@ -62,6 +62,9 @@ public:
 	/* Ensure audio pipe is active for a pin (called at stream start) */
 	void ensureAudioPipeEnabled(int cad, nid_t pinNid);
 
+	/* Notify GPU that HDMI audio streaming started/stopped */
+	void notifyStreamingState(int cad, nid_t pinNid, bool streaming);
+
 private:
 	bool init(VoodooHDADevice *device);
 

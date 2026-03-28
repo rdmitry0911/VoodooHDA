@@ -2689,6 +2689,13 @@ void VoodooHDADevice::channelStop(Channel *channel, const bool shouldLock)
 	if (shouldLock)
 		LOCK();
 
+	/* Notify GPU display engine that HDMI audio streaming has stopped */
+	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 && mFBNotifier) {
+		nid_t pin = getHDMIPinForChannel(channel);
+		if (pin != (nid_t)-1)
+			mFBNotifier->notifyStreamingState(cad, pin, false);
+	}
+
 	streamStop(channel);
 
 	for (int i = 0; channel->io[i] != -1; i++) {
@@ -2715,6 +2722,15 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 	streamSetId(channel);
 	streamSetup(channel);
 	streamStart(channel);
+
+	/* Notify GPU display engine that HDMI audio streaming has started.
+	 * The GPU needs this to begin encoding Audio InfoFrames into the
+	 * HDMI signal — without it the monitor won't decode audio. */
+	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 && mFBNotifier) {
+		nid_t pin = getHDMIPinForChannel(channel);
+		if (pin != (nid_t)-1)
+			mFBNotifier->notifyStreamingState(channel->funcGroup->codec->cad, pin, true);
+	}
 
 	if (shouldLock)
 		UNLOCK();
