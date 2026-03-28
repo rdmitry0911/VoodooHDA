@@ -668,7 +668,7 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 			goto done;
 		}
 	}
-	if (!audioEngines || (audioEngines->getCount() == 0)) {
+	if ((!audioEngines || (audioEngines->getCount() == 0)) && mNumHDMIEngines == 0) {
 		errorMsg("error: no audio engines were created\n");
 		goto done;
 	}
