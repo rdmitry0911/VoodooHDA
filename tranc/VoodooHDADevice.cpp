@@ -55,6 +55,8 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	extern kmod_info_t kmod_info;
 	mVerbose = 0;
 	mFBNotifier = NULL;
+	mNumHDMIEngines = 0;
+	bzero(mHDMIEngines, sizeof(mHDMIEngines));
 	IOLog("VoodooHDA DBG: init() called, dict=%p\n", dict);
 	if (!super::init(dict)) {
 		IOLog("VoodooHDA DBG: super::init() FAILED\n");
@@ -800,6 +802,20 @@ void VoodooHDADevice::free()
 	super::free();
 }
 
+nid_t VoodooHDADevice::getHDMIPinForChannel(Channel *channel)
+{
+	if (!channel || !channel->funcGroup || channel->assocNum < 0)
+		return (nid_t)-1;
+	AudioAssoc *assoc = &channel->funcGroup->audio.assocs[channel->assocNum];
+	for (int j = 0; j < 16; j++) {
+		if (assoc->pins[j] <= 0) continue;
+		Widget *w = widgetGet(channel->funcGroup, assoc->pins[j]);
+		if (w && (HDA_PARAM_PIN_CAP_HDMI(w->pin.cap) || HDA_PARAM_PIN_CAP_DP(w->pin.cap)))
+			return assoc->pins[j];
+	}
+	return (nid_t)-1;
+}
+
 bool VoodooHDADevice::createAudioEngine(Channel *channel)
 {
 	VoodooHDAEngine *audioEngine = NULL;
@@ -812,21 +828,53 @@ bool VoodooHDADevice::createAudioEngine(Channel *channel)
 	if (!audioEngine->initWithChannel(channel)) {
 		errorMsg("error: VoodooHDAEngine::init failed\n");
   } else {
-    
+
     // cue8chalk: set volume change fix on the engine
     audioEngine->mEnableVolumeChangeFix = mEnableVolumeChangeFix;
     // VertexBZ: set Mute fix on the engine
     audioEngine->mEnableMuteFix = mEnableMuteFix;
-    
+
     //  audioEngine->mDisableInputMonitor = mDisableInputMonitor;
     audioEngine->Boost = Boost;
-    // Active the audio engine - this will cause the audio engine to have start() and
-    // initHardware() called on it. After this function returns, that audio engine should
-    // be ready to begin vending audio services to the system.
-    if (activateAudioEngine(audioEngine) != kIOReturnSuccess) {
-      errorMsg("error: activateAudioEngine failed\n");
+
+    /*
+     * For HDMI/DP engines, only activate if the pin has a connected display.
+     * Inactive engines are stored for dynamic activation on hot-plug.
+     */
+    bool isHDMI = (channel->pcmDevice && channel->pcmDevice->digital >= 2);
+    nid_t hdmiPin = isHDMI ? getHDMIPinForChannel(channel) : (nid_t)-1;
+    bool hasPresence = false;
+
+    if (isHDMI && hdmiPin != (nid_t)-1 && mNumHDMIEngines < 16) {
+      UInt32 pinSense = sendCommand(HDA_CMD_GET_PIN_SENSE(channel->funcGroup->codec->cad, hdmiPin),
+                                     channel->funcGroup->codec->cad);
+      hasPresence = (pinSense & (1U << 31)) != 0;
+
+      HDMIEngineSlot *slot = &mHDMIEngines[mNumHDMIEngines++];
+      slot->engine = audioEngine;
+      slot->channel = channel;
+      slot->pinNid = hdmiPin;
+      slot->cad = channel->funcGroup->codec->cad;
+      slot->activated = false;
+      audioEngine->retain(); /* keep alive past RELEASE below */
+
+      if (hasPresence) {
+        if (activateAudioEngine(audioEngine) == kIOReturnSuccess) {
+          slot->activated = true;
+          result = true;
+        }
+      } else {
+        result = true; /* not an error — just deferred */
+      }
+      IOLog("VoodooHDA DBG: HDMI engine pin=%d presence=%d activated=%d\n",
+            hdmiPin, hasPresence, slot->activated);
     } else {
-      result = true;
+      /* Non-HDMI: always activate */
+      if (activateAudioEngine(audioEngine) != kIOReturnSuccess) {
+        errorMsg("error: activateAudioEngine failed\n");
+      } else {
+        result = true;
+      }
     }
   }
 
@@ -2032,6 +2080,29 @@ int VoodooHDADevice::unsolqFlush()
  * For analog pins, only presence (bit 0) is meaningful.
  * (Based on FreeBSD hdaa_unsol_intr)
  */
+void VoodooHDADevice::updateHDMIEnginePresence()
+{
+	for (int i = 0; i < mNumHDMIEngines; i++) {
+		HDMIEngineSlot *slot = &mHDMIEngines[i];
+		if (!slot->engine) continue;
+
+		UInt32 pinSense = sendCommand(HDA_CMD_GET_PIN_SENSE(slot->cad, slot->pinNid), slot->cad);
+		bool hasPresence = (pinSense & (1U << 31)) != 0;
+
+		if (hasPresence && !slot->activated) {
+			IOLog("VoodooHDA DBG: HDMI hot-plug: activating engine for pin=%d\n", slot->pinNid);
+			if (activateAudioEngine(slot->engine) == kIOReturnSuccess)
+				slot->activated = true;
+		} else if (!hasPresence && slot->activated) {
+			IOLog("VoodooHDA DBG: HDMI hot-unplug: deactivating engine for pin=%d\n", slot->pinNid);
+			slot->engine->stopAudioEngine();
+			slot->engine->stop(this);
+			slot->engine->detach(this);
+			slot->activated = false;
+		}
+	}
+}
+
 void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag, UInt32 resp)
 {
 	FunctionGroup *funcGroup = NULL;
@@ -2074,8 +2145,10 @@ void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag, UInt32 resp)
 			  (unsigned)tag, (unsigned)resp, flags);
 
 		/* Presence change — standard jack switching */
-		if (flags & 0x01)
+		if (flags & 0x01) {
 			switchHandler(funcGroup, false);
+			updateHDMIEnginePresence();
+		}
 
 		/* ELD change — re-read ELD for HDMI/DP pins */
 		if (flags & 0x02) {

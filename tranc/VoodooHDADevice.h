@@ -428,6 +428,19 @@ public:
 
 	/* Framebuffer notifier for AMD HDMI audio */
 	VoodooHDAFramebufferNotifier *mFBNotifier;
+
+	/* Dynamic HDMI engine management */
+	struct HDMIEngineSlot {
+		VoodooHDAEngine *engine;
+		Channel *channel;
+		nid_t pinNid;
+		int cad;
+		bool activated;
+	};
+	HDMIEngineSlot mHDMIEngines[16];
+	int mNumHDMIEngines;
+	nid_t getHDMIPinForChannel(Channel *channel);
+	void updateHDMIEnginePresence();
 };
 
 #endif
