@@ -864,13 +864,12 @@ bool VoodooHDADevice::createAudioEngine(Channel *channel)
       slot->activated = false;
       audioEngine->retain(); /* keep alive past RELEASE below */
 
-      if (hasPresence) {
-        if (activateAudioEngine(audioEngine) == kIOReturnSuccess) {
-          slot->activated = true;
-          result = true;
-        }
-      } else {
-        result = true; /* not an error — just deferred */
+      /* Always activate HDMI engines at init — presence is unknown at
+       * this point (unsolicited responses arrive later).  Dynamic
+       * deactivation on hot-unplug will hide unused engines. */
+      if (activateAudioEngine(audioEngine) == kIOReturnSuccess) {
+        slot->activated = true;
+        result = true;
       }
       IOLog("VoodooHDA DBG: HDMI engine pin=%d presence=%d activated=%d\n",
             hdmiPin, hasPresence, slot->activated);
@@ -2097,7 +2096,9 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 
 		if (hasPresence && !slot->activated) {
 			IOLog("VoodooHDA DBG: HDMI hot-plug: activating engine for pin=%d\n", slot->pinNid);
-			if (activateAudioEngine(slot->engine) == kIOReturnSuccess)
+			IOReturn ret = activateAudioEngine(slot->engine);
+			IOLog("VoodooHDA DBG: HDMI hot-plug: activateAudioEngine ret=0x%x\n", ret);
+			if (ret == kIOReturnSuccess)
 				slot->activated = true;
 			/* Inject EDID-based ELD into the newly present pin */
 			if (mFBNotifier)
