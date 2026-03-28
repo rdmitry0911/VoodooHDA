@@ -676,6 +676,49 @@ void VoodooHDAFramebufferNotifier::injectELDIntoAllPinsWithPresence(FBConnection
 	}
 }
 
+void VoodooHDAFramebufferNotifier::injectELDIntoPinIfReady(int cad, nid_t pinNid)
+{
+	IOLockLock(mLock);
+
+	/* Find any connection with valid EDID-based ELD */
+	FBConnectionState *src = NULL;
+	for (int i = 0; i < mNumConnections; i++) {
+		if (mConnections[i].edidValid && mConnections[i].eld && mConnections[i].eldLen > 0) {
+			src = &mConnections[i];
+			break;
+		}
+	}
+
+	if (src && mDevice) {
+		Codec *codec = mDevice->mCodecs[cad];
+		if (codec) {
+			for (int fg = 0; fg < codec->numFuncGroups; fg++) {
+				FunctionGroup *funcGroup = &codec->funcGroups[fg];
+				if (funcGroup->nodeType != HDA_PARAM_FCT_GRP_TYPE_NODE_TYPE_AUDIO)
+					continue;
+				Widget *w = mDevice->widgetGet(funcGroup, pinNid);
+				if (!w) continue;
+
+				if (w->eld) {
+					VoodooHDADevice::freeMem(w->eld);
+					w->eld = NULL;
+					w->eld_len = 0;
+				}
+				w->eld = (uint8_t *)VoodooHDADevice::allocMem(src->eldLen);
+				if (w->eld) {
+					memcpy(w->eld, src->eld, src->eldLen);
+					w->eld_len = src->eldLen;
+					FBLOG("injectELDIntoPinIfReady: nid=%d eld_len=%d spkalloc=0x%02x",
+					      pinNid, w->eld_len, (w->eld_len > 7) ? w->eld[7] : 0);
+				}
+				break;
+			}
+		}
+	}
+
+	IOLockUnlock(mLock);
+}
+
 void VoodooHDAFramebufferNotifier::clearWidgetELD(FBConnectionState *conn)
 {
 	if (!mDevice || conn->mappedPinNid < 0) return;
