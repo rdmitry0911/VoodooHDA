@@ -2104,12 +2104,15 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 			/* Inject EDID-based ELD into the newly present pin */
 			if (mFBNotifier)
 				mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
-		} else if (!hasPresence && slot->activated) {
-			/* Do NOT stop/detach engines — it corrupts IOAudioDevice's
-			 * internal audioEngines array and causes CoreAudio to lose
-			 * the entire device.  Leave all engines active; the controller
-			 * name prefix helps users identify the correct output. */
 		}
+
+		/* Update engine description to show connection status */
+		char desc[80];
+		snprintf(desc, sizeof(desc), "%s: HDMI %d (%s)",
+		         mControllerName ? mControllerName : "GPU",
+		         slot->pinNid,
+		         hasPresence ? "connected" : "no display");
+		slot->engine->setProperty("IOAudioEngineDescription", desc);
 	}
 }
 
