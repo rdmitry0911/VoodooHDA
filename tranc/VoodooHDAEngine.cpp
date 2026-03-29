@@ -397,6 +397,7 @@ __attribute__((visibility("hidden")))
 bool VoodooHDAEngine::createAudioStream()
 {
 	bool result = false;
+	bool isDigital;
 	IOAudioStreamDirection direction;
 	IOAudioSampleRate minSampleRate, maxSampleRate;
 	UInt8 *sampleBuffer;
@@ -435,7 +436,18 @@ bool VoodooHDAEngine::createAudioStream()
 	maxSampleRate.whole = mChannel->caps.maxSpeed;
 	maxSampleRate.fraction = 0;
 	channels = mChannel->caps.channels;
-	logMsg("(min: %ld, max: %ld) channels=%d\n", (long int)mChannel->caps.minSpeed, (long int)mChannel->caps.maxSpeed, (int)channels);
+
+	/*
+	 * HDMI/DP monitors typically support only 2-channel stereo.
+	 * ATI codecs report 8 channels per association but sending 8ch
+	 * to a 2ch sink produces noise.  Cap to 2 for digital outputs.
+	 * (AV receivers with 5.1/7.1 can be supported later via ELD.)
+	 */
+	isDigital = (mChannel->funcGroup->audio.assocs[mChannel->assocNum].digital != 0);
+	if (isDigital && channels > 2)
+		channels = 2;
+
+	logMsg("(min: %ld, max: %ld) channels=%d%s\n", (long int)mChannel->caps.minSpeed, (long int)mChannel->caps.maxSpeed, (int)channels, isDigital ? " (digital, capped to 2)" : "");
 	sampleBuffer = (UInt8 *) mChannel->buffer->virtAddr;
 	mBufferSize = HDA_BUFSZ_MAX; // hardcoded in pcmAttach()
     if (!createAudioStream(direction, sampleBuffer, mBufferSize, mChannel->pcmRates,
