@@ -34,6 +34,7 @@ public:
 	bool emptyStream;
 
 	const char *mPortName;
+	char mPortNameBuf[64];
 	UInt32 mPortType;
 
 	IOAudioSelectorControl *mSelControl;

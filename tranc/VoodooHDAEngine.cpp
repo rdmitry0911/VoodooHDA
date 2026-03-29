@@ -192,8 +192,18 @@ const char *VoodooHDAEngine::getPortName()
 		goto done;
 
 	//Slice - advanced PinName
-
-	mPortName = &widget->name[5]; 
+	{
+		const char *pinName = &widget->name[5];
+		const char *ctrlName = mDevice->mControllerName;
+		/* Prefix with controller name to distinguish identical port names
+		 * (e.g. "Intel PCH: Digital-out (HDMI)" vs "AMD VEGA: Digital-out (HDMI)") */
+		if (ctrlName) {
+			snprintf(mPortNameBuf, sizeof(mPortNameBuf), "%s: %s", ctrlName, pinName);
+			mPortName = mPortNameBuf;
+		} else {
+			mPortName = pinName;
+		}
+	}
 	mPortType = pinConfigToSelection(widget->pin.config);
 done:
 	mDevice->unlock(__FUNCTION__);
