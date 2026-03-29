@@ -2458,6 +2458,29 @@ void VoodooHDADevice::audioCommit(FunctionGroup *funcGroup)
 	/* Commit controls. */
 	audioCtlCommit(funcGroup);
 
+	/* Unmute output amps on output pins.  audioCtlCommit mutes disabled
+	 * controls, but output pin amps must always pass audio — switching
+	 * is handled by input amps and pin ctrl only.  Use audioCtlAmpSetInternal
+	 * directly to bypass the forcemute flag set by audioDisableUnassociated. */
+	{
+		AudioControl *ctl;
+		for (int i = 0; (ctl = audioCtlEach(funcGroup, i)); i++) {
+			if (ctl->enable != 0) continue;
+			if (!(ctl->dir & HDA_CTL_OUT)) continue;
+			if (!ctl->widget) continue;
+			Widget *w = ctl->widget;
+			if (w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX) continue;
+			UInt32 devType = w->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK;
+			if (devType != HDA_CONFIG_DEFAULTCONF_DEVICE_LINE_OUT &&
+				devType != HDA_CONFIG_DEFAULTCONF_DEVICE_SPEAKER &&
+				devType != HDA_CONFIG_DEFAULTCONF_DEVICE_HP_OUT) continue;
+			int z = ctl->offset;
+			if (z > ctl->step) z = ctl->step;
+			audioCtlAmpSetInternal(cad, w->nid, ctl->index, 0, 0, z, z, 0);
+			dumpMsg("Unmuted output amp on pin nid=%d to 0dB\n", w->nid);
+		}
+	}
+
 	/* Commit selectors, pins and EAPD. */
 	for (int i = 0; i < funcGroup->numNodes; i++) {
 		Widget *widget = &funcGroup->widgets[i];
