@@ -2105,11 +2105,10 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 			if (mFBNotifier)
 				mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
 		} else if (!hasPresence && slot->activated) {
-			IOLog("VoodooHDA DBG: HDMI hot-unplug: deactivating engine for pin=%d\n", slot->pinNid);
-			slot->engine->stopAudioEngine();
-			slot->engine->stop(this);
-			slot->engine->detach(this);
-			slot->activated = false;
+			/* Do NOT stop/detach engines — it corrupts IOAudioDevice's
+			 * internal audioEngines array and causes CoreAudio to lose
+			 * the entire device.  Leave all engines active; the controller
+			 * name prefix helps users identify the correct output. */
 		}
 	}
 }
