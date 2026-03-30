@@ -4285,6 +4285,11 @@ int VoodooHDADevice::pcmChannelSetup(Channel *channel)
 				channel->bit32 = 3;
 			else if (HDA_PARAM_SUPP_PCM_SIZE_RATE_20BIT(pcmcap))
 				channel->bit32 = 2;
+			/* ATI HDMI codecs are pass-through: force 24-bit so
+			 * AFMT_S32_LE enters formats[] and channelSetFormat
+			 * accepts 24-bit from performFormatChange. */
+			if (!channel->bit32 && assocs[channel->assocNum].digital >= 2)
+				channel->bit32 = 3;
 			if (!(funcGroup->audio.quirks & HDA_QUIRK_FORCESTEREO)) {
 				channel->formats[i++] = AFMT_S16_LE;
 				if (channel->bit32 == 4)
