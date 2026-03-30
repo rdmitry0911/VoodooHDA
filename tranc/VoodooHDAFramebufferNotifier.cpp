@@ -509,6 +509,11 @@ bool VoodooHDAFramebufferNotifier::parseEDIDAudio(FBConnectionState *conn)
 				conn->sads[off + 0] = cea[pos + i * 3 + 0];
 				conn->sads[off + 1] = cea[pos + i * 3 + 1];
 				conn->sads[off + 2] = cea[pos + i * 3 + 2];
+				int fmt = (conn->sads[off + 0] >> 3) & 0x0f;
+				int nch = (conn->sads[off + 0] & 0x07) + 1;
+				FBLOG("parseEDIDAudio: pin=%d SAD[%d]: fmt=%d ch=%d rates=0x%02x bits=0x%02x",
+				      conn->mappedPinNid, conn->numSADs, fmt, nch,
+				      conn->sads[off + 1], conn->sads[off + 2]);
 				conn->numSADs++;
 			}
 			FBLOG("parseEDIDAudio: pin=%d Audio Data Block: %d SADs", conn->mappedPinNid, nSADs);
