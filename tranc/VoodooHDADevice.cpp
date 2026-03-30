@@ -3066,10 +3066,37 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 				sendCommand(HDA_CMD_SET_HDMI_CHAN_SLOT(cad, nid_pin, slotVerb), cad);
 			}
 
-			/* Enable InfoFrame transmission — even with DIP_SIZE=0 */
-			sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-			sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
-			IOLog("VoodooHDA HDMI: ATI path + standard CHAN_SLOT + DIP_XMIT=0xc0 nid=%d\n", nid_pin);
+			/*
+			 * Write Audio InfoFrame via DIP verbs even with DIP_SIZE=0.
+			 * ATI codecs may still accept DIP_DATA writes; without the
+			 * InfoFrame content the monitor sees an empty packet and
+			 * won't decode audio.  Matches standard HDA path (lines below).
+			 */
+			{
+				int ca = hdmica[totalext == 0 ? 0 : 1][totalchn - 1];
+				UInt8 csum = -(0x84 + 0x01 + 0x0a + (totalchn - 1) + ca);
+
+				/* Stop transmission */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
+				sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0x00), cad);
+
+				/* Write Audio InfoFrame header + data */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x84), cad);  /* type: Audio */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x01), cad);  /* version */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x0a), cad);  /* length */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, csum), cad);  /* checksum */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, totalchn - 1), cad); /* CC */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x00), cad);  /* CT/SF/SS */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x00), cad);  /* format */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, ca), cad);    /* CA */
+
+				/* Start transmission */
+				sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
+				sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
+			}
+			IOLog("VoodooHDA HDMI: ATI path + CHAN_SLOT + InfoFrame + DIP_XMIT=0xc0 nid=%d ca=0x%02x chn=%d\n",
+				  nid_pin, hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
 			continue;
 		}
 
