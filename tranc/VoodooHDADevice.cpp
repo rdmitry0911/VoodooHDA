@@ -2101,10 +2101,12 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 			IOLog("VoodooHDA DBG: HDMI hot-plug: activateAudioEngine ret=0x%x\n", ret);
 			if (ret == kIOReturnSuccess)
 				slot->activated = true;
-			/* Inject EDID-based ELD into the newly present pin */
-			if (mFBNotifier)
-				mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
 		}
+
+		/* Inject EDID-based ELD into any pin that gains presence,
+		 * regardless of activation state (engines are pre-activated at init) */
+		if (hasPresence && mFBNotifier)
+			mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
 
 		/* Update engine description to show connection status */
 		char desc[80];
