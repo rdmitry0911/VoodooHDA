@@ -548,15 +548,21 @@ bool VoodooHDAEngine::createAudioStream(IOAudioStreamDirection direction, void *
             formatEx.fBytesPerPacket = format.fNumChannels * (format.fBitWidth / 8);
             mStream->addAvailableFormat(&format, &formatEx, &sampleRate, &sampleRate);
 	}
-	if (HDA_PARAM_SUPP_PCM_SIZE_RATE_24BIT(supPcmSizeRates) || isDigital) {
-		/* ATI HDMI codecs are pass-through: they forward 24-bit even
-		 * though PCM caps report only 16-bit.  Add 24-bit as available;
-		 * default stays 16-bit (set by setFormat below using last
-		 * codec-native format).  User can switch to 24-bit in Audio MIDI. */
+	if (HDA_PARAM_SUPP_PCM_SIZE_RATE_24BIT(supPcmSizeRates)) {
 		format.fBitDepth = 24;
 		format.fBitWidth = 32;
             formatEx.fBytesPerPacket = format.fNumChannels * (format.fBitWidth / 8);
             mStream->addAvailableFormat(&format, &formatEx, &sampleRate, &sampleRate);
+	} else if (isDigital) {
+		/* ATI HDMI codecs are pass-through: add 24-bit as available
+		 * option but keep 16-bit as default (restore format after). */
+		IOAudioStreamFormat fmt24 = format;
+		IOAudioStreamFormatExtension fmtEx24 = formatEx;
+		fmt24.fBitDepth = 24;
+		fmt24.fBitWidth = 32;
+		fmtEx24.fBytesPerPacket = fmt24.fNumChannels * (fmt24.fBitWidth / 8);
+		mStream->addAvailableFormat(&fmt24, &fmtEx24, &sampleRate, &sampleRate);
+		/* format stays at 16-bit for setFormat default below */
 	} else if (HDA_PARAM_SUPP_PCM_SIZE_RATE_20BIT(supPcmSizeRates)) {
 		format.fBitDepth = 20;
 		format.fBitWidth = 32;
