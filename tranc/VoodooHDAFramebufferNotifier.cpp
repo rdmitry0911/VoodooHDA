@@ -616,6 +616,17 @@ bool VoodooHDAFramebufferNotifier::enableAudioPipe(FBConnectionState *conn)
 	return conn->audioPipeEnabled;
 }
 
+void VoodooHDAFramebufferNotifier::retryEnableAudioPipeAll()
+{
+	IOLockLock(mLock);
+	for (int i = 0; i < mNumConnections; i++) {
+		FBConnectionState *conn = &mConnections[i];
+		if (conn->audioPipeEnabled || !conn->framebuffer) continue;
+		enableAudioPipe(conn);
+	}
+	IOLockUnlock(mLock);
+}
+
 void VoodooHDAFramebufferNotifier::disableAudioPipe(FBConnectionState *conn)
 {
 	conn->audioPipeEnabled = false;

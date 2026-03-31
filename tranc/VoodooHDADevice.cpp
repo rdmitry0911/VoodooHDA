@@ -2088,6 +2088,12 @@ int VoodooHDADevice::unsolqFlush()
  */
 void VoodooHDADevice::updateHDMIEnginePresence()
 {
+	/* Retry enableAudioPipe on framebuffers that returned timeout at
+	 * handleFBMatched time.  By the time unsolicited responses arrive,
+	 * all framebuffers should be fully initialized. */
+	if (mFBNotifier)
+		mFBNotifier->retryEnableAudioPipeAll();
+
 	for (int i = 0; i < mNumHDMIEngines; i++) {
 		HDMIEngineSlot *slot = &mHDMIEngines[i];
 		if (!slot->engine) continue;
