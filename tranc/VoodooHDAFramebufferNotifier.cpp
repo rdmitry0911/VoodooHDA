@@ -2,6 +2,7 @@
 
 #include "VoodooHDAFramebufferNotifier.h"
 #include "VoodooHDADevice.h"
+#include "VoodooHDAEngine.h"
 #include "Verbs.h"
 
 #include <IOKit/pci/IOPCIDevice.h>
@@ -596,6 +597,22 @@ bool VoodooHDAFramebufferNotifier::enableAudioPipe(FBConnectionState *conn)
 	FBLOG("enableAudioPipe: pin=%d setAttributeForConnectionExt(kConnectionEnableAudio)=%x", conn->mappedPinNid, ret);
 
 	conn->audioPipeEnabled = (ret == kIOReturnSuccess);
+
+	/* Update engine name to show which port has audio enabled */
+	if (conn->audioPipeEnabled && mDevice && conn->mappedPinNid >= 0) {
+		for (int i = 0; i < mDevice->mNumHDMIEngines; i++) {
+			VoodooHDADevice::HDMIEngineSlot *slot = &mDevice->mHDMIEngines[i];
+			if (slot->engine && slot->pinNid == conn->mappedPinNid) {
+				char desc[80];
+				snprintf(desc, sizeof(desc), "%s: HDMI %d (audio enabled)",
+				         mDevice->mControllerName ? mDevice->mControllerName : "GPU",
+				         slot->pinNid);
+				slot->engine->setProperty("IOAudioEngineDescription", desc);
+				FBLOG("enableAudioPipe: updated engine name for pin=%d", conn->mappedPinNid);
+			}
+		}
+	}
+
 	return conn->audioPipeEnabled;
 }
 
