@@ -3051,6 +3051,15 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 			logMsg("ATI HDMI verb path: nid=%d ca=0x%02x totalchn=%d\n", nid_pin, ca, totalchn);
 
 			/*
+			 * Ensure pin OUT is enabled.  AppleGFXHDA always sends
+			 * SET_PIN_WIDGET_CTRL via Path::enable.  ATI pin caps may
+			 * not report HDMI/HBR bits, so the standard HBR block
+			 * (below) never fires — we must do it explicitly.
+			 */
+			widget_pin->pin.ctrl |= 0x40; /* OUT_ENABLE */
+			sendCommand(HDA_CMD_SET_PIN_WIDGET_CTRL(cad, nid_pin, widget_pin->pin.ctrl), cad);
+
+			/*
 			 * AppleGFXHDA always sends standard HDA channel slots (0x734) and
 			 * enables DIP transmission (0x732=0xc0) even on ATI codecs with
 			 * DIP_SIZE=0.  Without DIP_XMIT the monitor never sees the Audio
