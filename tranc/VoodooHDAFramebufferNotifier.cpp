@@ -315,10 +315,12 @@ void VoodooHDAFramebufferNotifier::handleFramebufferMatched(IOService *fb)
 	      fb, idx, conn->fbNotifier, conn->mappedPinNid);
 
 	/*
-	 * Do NOT call enableAudioPipe here — calling setAttributeForConnection
-	 * before IODisplay exists can disrupt the display pipeline (dark screen).
-	 * Audio pipe is enabled later in displayMatchedHandler when IODisplay appears.
+	 * Try enabling audio pipe on every framebuffer.  Using
+	 * setAttributeForConnectionExt (with IOFramebuffer lock) is safe.
+	 * Most will return kIOReturnUnsupported before IODisplay exists,
+	 * but the one with the physical monitor may accept it.
 	 */
+	enableAudioPipe(conn);
 
 	/* Try reading EDID immediately (usually too early — displayMatchedHandler will retry) */
 	if (readEDID(conn) && parseEDIDAudio(conn)) {
