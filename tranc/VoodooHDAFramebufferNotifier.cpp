@@ -40,6 +40,11 @@ bool VoodooHDAFramebufferNotifier::init(VoodooHDADevice *device)
 	mATIPinCount = 0;
 	mATIPinCad = -1;
 	mHDAPciDevice = device->mPciNub;
+	mGPUPciDevice = NULL;
+	mGPUMMIOMap = NULL;
+	mGPUMMIO = NULL;
+	mGPUMMIOSize = 0;
+	mGPUAudioInitDone = false;
 	mLock = IOLockAlloc();
 	if (!mLock) return false;
 
@@ -53,6 +58,7 @@ bool VoodooHDAFramebufferNotifier::init(VoodooHDADevice *device)
 void VoodooHDAFramebufferNotifier::free()
 {
 	stopMatching();
+	unmapGPUMMIO();
 	if (mLock) {
 		IOLockFree(mLock);
 		mLock = NULL;
@@ -267,6 +273,9 @@ bool VoodooHDAFramebufferNotifier::displayMatchedHandler(
 
 				FBLOG("displayMatched: pin=%d spkalloc=0x%02x nsads=%d pipe enabled",
 				      conn->mappedPinNid, conn->speakerAllocation, conn->numSADs);
+
+				/* Try to enable GPU audio engine via direct MMIO */
+				self->initGPUAudioIfNeeded();
 			}
 		}
 	}
@@ -824,6 +833,8 @@ void VoodooHDAFramebufferNotifier::ensureAudioPipeEnabled(int cad, nid_t pinNid)
 			break;
 		}
 	}
+	/* Ensure GPU AZ registers are programmed at stream start */
+	initGPUAudioIfNeeded();
 	IOLockUnlock(mLock);
 }
 
@@ -846,4 +857,413 @@ VoodooHDAFramebufferNotifier::findConnection(IOService *fb)
 			return &mConnections[i];
 	}
 	return NULL;
+}
+
+/* ========================================================================
+ * GPU MMIO direct register access for AZ (Azalia) audio engine
+ *
+ * On AMD GPUs, the HDA codec's DIP buffers and audio engine are controlled
+ * by GPU-side AZ registers in GPU BAR5 MMIO space.  Without programming
+ * these registers, DIP_SIZE returns 0 and no audio reaches the display.
+ *
+ * Register offsets are for AMD Vega 10 (DCE 12.0), derived from Linux
+ * amdgpu driver (dce_12_0_offset.h, dce_audio.c).
+ * ======================================================================== */
+
+/*
+ * Vega 10 DCE register segment bases (dword offsets from BAR5 start).
+ * From Linux: drivers/gpu/drm/amd/include/asic_reg/vega10/vg10_ip_offset.h
+ */
+#define VEGA10_DCE_SEG1_BASE  0x000000C0u  /* DCCG registers */
+#define VEGA10_DCE_SEG2_BASE  0x000034C0u  /* DCE AZ/AFMT/DP registers */
+
+/* Convert DCE segment + dword offset to BAR5 byte offset */
+#define DCE_REG(seg_base, dw_off)  (((seg_base) + (dw_off)) * 4)
+
+/* Azalia endpoint indirect registers (BASE_IDX=2, per-endpoint) */
+#define AZ_ENDPOINT_STRIDE  6  /* dword stride between endpoints */
+#define AZ_EP_INDEX(n)  DCE_REG(VEGA10_DCE_SEG2_BASE, 0x0480 + (n) * AZ_ENDPOINT_STRIDE)
+#define AZ_EP_DATA(n)   DCE_REG(VEGA10_DCE_SEG2_BASE, 0x0481 + (n) * AZ_ENDPOINT_STRIDE)
+
+/* AZ indirect register indices (written to ENDPOINT_INDEX) */
+#define AZ_REG_PIN_CONTROL_CHANNEL_SPEAKER          0x25
+#define AZ_REG_PIN_CONTROL_AUDIO_DESCRIPTOR(n)      (0x28 + (n))
+#define AZ_REG_PIN_CONTROL_MULTICHANNEL_ENABLE       0x36
+#define AZ_REG_PIN_CONTROL_RESPONSE_HBR              0x38
+#define AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL          0x54
+#define AZ_REG_PIN_CONTROL_MULTICHANNEL_MODE          0x58
+
+/* HOT_PLUG_CONTROL bits */
+#define AZ_HPC_CLOCK_GATING_DISABLE  (1u << 0)
+#define AZ_HPC_AUDIO_ENABLED         (1u << 31)
+
+/* CHANNEL_SPEAKER bits */
+#define AZ_CS_SPEAKER_ALLOC_MASK     0x0000007Fu
+#define AZ_CS_CHANNEL_ALLOC_MASK     0x0000FF00u
+#define AZ_CS_CHANNEL_ALLOC_SHIFT    8
+#define AZ_CS_HDMI_CONNECTION        (1u << 16)
+#define AZ_CS_DP_CONNECTION          (1u << 17)
+
+/* Per-DIG encoder registers (BASE_IDX=2) */
+#define DIG_STRIDE          0x100  /* dword stride between DIG0..DIG6 */
+#define DIG0_BASE           0x18C0u
+
+#define DIG_AFMT_AUDIO_PACKET_CONTROL(d)   DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0x00 + (d)*DIG_STRIDE)
+#define DIG_AFMT_AUDIO_PACKET_CONTROL2(d)  DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0xD2 + (d)*DIG_STRIDE)
+#define DIG_AFMT_AUDIO_SRC_CONTROL(d)      DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0x03 + (d)*DIG_STRIDE)
+#define DIG_AFMT_CNTL(d)                   DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0x3C + (d)*DIG_STRIDE)
+
+/* DP secondary data packet control (per-DIG, BASE_IDX=2) */
+#define DIG_DP_SEC_CNTL(d)       DCE_REG(VEGA10_DCE_SEG2_BASE, 0x1941 + (d)*DIG_STRIDE)
+#define DIG_DP_SEC_AUD_N(d)      DCE_REG(VEGA10_DCE_SEG2_BASE, 0x1947 + (d)*DIG_STRIDE)
+#define DIG_DP_SEC_TIMESTAMP(d)  DCE_REG(VEGA10_DCE_SEG2_BASE, 0x194B + (d)*DIG_STRIDE)
+
+/* DP_SEC_CNTL bits */
+#define DP_SEC_STREAM_ENABLE  (1u << 0)
+#define DP_SEC_ASP_ENABLE     (1u << 4)
+#define DP_SEC_ATP_ENABLE     (1u << 8)
+#define DP_SEC_AIP_ENABLE     (1u << 12)
+#define DP_SEC_ACM_ENABLE     (1u << 16)
+
+/* AFMT bits */
+#define AFMT_AUDIO_SAMPLE_SEND   (1u << 0)
+#define AFMT_AUDIO_CLOCK_EN      (1u << 0)
+
+/* DCCG audio DTO registers (BASE_IDX=1) */
+#define DCCG_AUDIO_DTO_SOURCE   DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AB)
+#define DCCG_AUDIO_DTO0_PHASE   DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AC)
+#define DCCG_AUDIO_DTO0_MODULE  DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AD)
+#define DCCG_AUDIO_DTO1_PHASE   DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AE)
+#define DCCG_AUDIO_DTO1_MODULE  DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AF)
+
+/* ---------- GPU MMIO mapping ---------- */
+
+bool VoodooHDAFramebufferNotifier::mapGPUMMIO()
+{
+	if (mGPUMMIO) return true;  /* already mapped */
+	if (!mHDAPciDevice) return false;
+
+	/* GPU is PCI function 0, HDA audio is function 1.
+	 * They share the same parent PCI bridge. */
+	IOService *parent = mHDAPciDevice->getProvider();
+	if (!parent) {
+		FBLOG("mapGPUMMIO: no parent bridge");
+		return false;
+	}
+
+	/* Find function 0 among siblings */
+	OSIterator *iter = parent->getChildIterator(gIOServicePlane);
+	if (!iter) return false;
+
+	IOPCIDevice *gpuDev = NULL;
+	IOService *child;
+	while ((child = OSDynamicCast(IOService, iter->getNextObject()))) {
+		IOPCIDevice *pci = OSDynamicCast(IOPCIDevice, child);
+		if (!pci) continue;
+		UInt16 vendor = pci->configRead16(kIOPCIConfigVendorID);
+		if (vendor != 0x1002) continue;
+		/* Function 0 is the GPU display controller */
+		UInt8 funcNum = pci->getFunctionNumber();
+		if (funcNum == 0) {
+			gpuDev = pci;
+			break;
+		}
+	}
+	iter->release();
+
+	if (!gpuDev) {
+		FBLOG("mapGPUMMIO: GPU function 0 not found");
+		return false;
+	}
+
+	FBLOG("mapGPUMMIO: found GPU device=%p vendor=%04x device=%04x",
+	      gpuDev, gpuDev->configRead16(kIOPCIConfigVendorID),
+	      gpuDev->configRead16(kIOPCIConfigDeviceID));
+
+	/* Find the MMIO BAR (typically BAR5, ~256KB-512KB).
+	 * BAR0/1 = VRAM (huge), BAR2/3 = doorbell, BAR5 = MMIO registers */
+	static const UInt8 barRegs[] = {
+		kIOPCIConfigBaseAddress5,
+		kIOPCIConfigBaseAddress4,
+		kIOPCIConfigBaseAddress2,
+	};
+
+	for (int b = 0; b < 3; b++) {
+		IODeviceMemory *mem = gpuDev->getDeviceMemoryWithRegister(barRegs[b]);
+		if (!mem) continue;
+		uint64_t len = mem->getLength();
+		/* MMIO BAR is typically 256KB-512KB; skip huge VRAM BARs */
+		if (len >= 0x40000 && len <= 0x100000) {
+			mGPUMMIOMap = mem->createMappingInTask(kernel_task, 0,
+				kIOMapAnywhere | kIOMapInhibitCache);
+			if (mGPUMMIOMap) {
+				mGPUMMIO = (volatile uint32_t *)mGPUMMIOMap->getVirtualAddress();
+				mGPUMMIOSize = (uint32_t)len;
+				mGPUPciDevice = gpuDev;
+				FBLOG("mapGPUMMIO: mapped BAR%d size=0x%x vaddr=%p",
+				      (barRegs[b] - kIOPCIConfigBaseAddress0) / 4,
+				      mGPUMMIOSize, mGPUMMIO);
+				return true;
+			}
+		}
+		FBLOG("mapGPUMMIO: BAR%d size=0x%llx skipped",
+		      (barRegs[b] - kIOPCIConfigBaseAddress0) / 4, len);
+	}
+
+	FBLOG("mapGPUMMIO: no suitable MMIO BAR found");
+	return false;
+}
+
+void VoodooHDAFramebufferNotifier::unmapGPUMMIO()
+{
+	if (mGPUMMIOMap) {
+		mGPUMMIOMap->release();
+		mGPUMMIOMap = NULL;
+	}
+	mGPUMMIO = NULL;
+	mGPUMMIOSize = 0;
+	mGPUPciDevice = NULL;
+}
+
+uint32_t VoodooHDAFramebufferNotifier::gpuRead32(uint32_t byteOffset)
+{
+	if (!mGPUMMIO || byteOffset + 4 > mGPUMMIOSize) return 0xFFFFFFFF;
+	return mGPUMMIO[byteOffset / 4];
+}
+
+void VoodooHDAFramebufferNotifier::gpuWrite32(uint32_t byteOffset, uint32_t value)
+{
+	if (!mGPUMMIO || byteOffset + 4 > mGPUMMIOSize) return;
+	mGPUMMIO[byteOffset / 4] = value;
+}
+
+uint32_t VoodooHDAFramebufferNotifier::azEndpointRead(int ep, uint32_t index)
+{
+	gpuWrite32(AZ_EP_INDEX(ep), index);
+	return gpuRead32(AZ_EP_DATA(ep));
+}
+
+void VoodooHDAFramebufferNotifier::azEndpointWrite(int ep, uint32_t index, uint32_t value)
+{
+	gpuWrite32(AZ_EP_INDEX(ep), index);
+	gpuWrite32(AZ_EP_DATA(ep), value);
+}
+
+/* ---------- Diagnostic dump of AZ state ---------- */
+
+void VoodooHDAFramebufferNotifier::dumpAZState()
+{
+	if (!mGPUMMIO) return;
+
+	for (int ep = 0; ep < 7; ep++) {
+		/* Disable clock gating to read registers */
+		uint32_t hpc = azEndpointRead(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL);
+		azEndpointWrite(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL,
+		                hpc | AZ_HPC_CLOCK_GATING_DISABLE);
+
+		uint32_t hpc2 = azEndpointRead(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL);
+		uint32_t cs = azEndpointRead(ep, AZ_REG_PIN_CONTROL_CHANNEL_SPEAKER);
+		uint32_t desc0 = azEndpointRead(ep, AZ_REG_PIN_CONTROL_AUDIO_DESCRIPTOR(0));
+		uint32_t hbr = azEndpointRead(ep, AZ_REG_PIN_CONTROL_RESPONSE_HBR);
+
+		FBLOG("AZ EP%d: HPC=0x%08x CS=0x%08x DESC0=0x%08x HBR=0x%08x audioEnabled=%d",
+		      ep, hpc2, cs, desc0, hbr, (hpc2 & AZ_HPC_AUDIO_ENABLED) ? 1 : 0);
+
+		/* Re-enable clock gating */
+		azEndpointWrite(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL,
+		                hpc & ~AZ_HPC_CLOCK_GATING_DISABLE);
+	}
+
+	/* Dump DIG/AFMT/DP_SEC state for first 6 DIGs */
+	for (int d = 0; d < 6; d++) {
+		uint32_t afmtSrc = gpuRead32(DIG_AFMT_AUDIO_SRC_CONTROL(d));
+		uint32_t afmtCntl = gpuRead32(DIG_AFMT_CNTL(d));
+		uint32_t dpSec = gpuRead32(DIG_DP_SEC_CNTL(d));
+		uint32_t pktCtl = gpuRead32(DIG_AFMT_AUDIO_PACKET_CONTROL(d));
+		FBLOG("AZ DIG%d: AFMT_SRC=0x%08x AFMT_CNTL=0x%08x DP_SEC=0x%08x PKT_CTL=0x%08x",
+		      d, afmtSrc, afmtCntl, dpSec, pktCtl);
+	}
+
+	/* DCCG DTO */
+	uint32_t dtoSrc = gpuRead32(DCCG_AUDIO_DTO_SOURCE);
+	uint32_t dto1Phase = gpuRead32(DCCG_AUDIO_DTO1_PHASE);
+	uint32_t dto1Mod = gpuRead32(DCCG_AUDIO_DTO1_MODULE);
+	FBLOG("AZ DCCG: DTO_SRC=0x%08x DTO1_PHASE=0x%08x DTO1_MOD=0x%08x",
+	      dtoSrc, dto1Phase, dto1Mod);
+}
+
+/* ---------- Enable GPU audio engine for a DP output ---------- */
+
+bool VoodooHDAFramebufferNotifier::enableGPUAudioEngine(
+	int endpoint, int digIndex, bool isDP,
+	uint8_t speakerAlloc, int numChannels)
+{
+	if (!mGPUMMIO) return false;
+
+	FBLOG("enableGPUAudio: ep=%d dig=%d isDP=%d spkalloc=0x%02x ch=%d",
+	      endpoint, digIndex, isDP, speakerAlloc, numChannels);
+
+	/* Phase 1: Configure Azalia endpoint */
+
+	/* 1a. Disable clock gating */
+	uint32_t hpc = azEndpointRead(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL);
+	azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL,
+	                hpc | AZ_HPC_CLOCK_GATING_DISABLE);
+
+	/* 1b. Set CHANNEL_SPEAKER: speaker allocation + connection type */
+	uint32_t cs = azEndpointRead(endpoint, AZ_REG_PIN_CONTROL_CHANNEL_SPEAKER);
+	cs &= ~(AZ_CS_SPEAKER_ALLOC_MASK | AZ_CS_HDMI_CONNECTION | AZ_CS_DP_CONNECTION);
+	cs |= (speakerAlloc & AZ_CS_SPEAKER_ALLOC_MASK);
+	if (isDP)
+		cs |= AZ_CS_DP_CONNECTION;
+	else
+		cs |= AZ_CS_HDMI_CONNECTION;
+	azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_CHANNEL_SPEAKER, cs);
+
+	/* 1c. Write LPCM audio descriptor (format 0):
+	 *   MAX_CHANNELS=1 (stereo), SUPPORTED_FREQUENCIES=0x07 (32/44.1/48),
+	 *   DESCRIPTOR_BYTE_2=0x01 (16-bit), STEREO_FREQS=0x07 */
+	uint32_t desc0 = ((numChannels - 1) & 0x07) |
+	                 (0x07 << 8) |    /* 32, 44.1, 48 kHz */
+	                 (0x07 << 16) |   /* 16, 20, 24-bit */
+	                 (0x07 << 24);    /* stereo frequencies */
+	azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_AUDIO_DESCRIPTOR(0), desc0);
+
+	/* 1d. Clear other audio descriptors */
+	for (int i = 1; i < 14; i++)
+		azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_AUDIO_DESCRIPTOR(i), 0);
+
+	/* 1e. Re-enable clock gating */
+	hpc = azEndpointRead(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL);
+	hpc &= ~AZ_HPC_CLOCK_GATING_DISABLE;
+	azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL, hpc);
+
+	/* Phase 2: Map DIG encoder to audio endpoint */
+
+	/* 2a. Set audio source: map DIG to this endpoint */
+	gpuWrite32(DIG_AFMT_AUDIO_SRC_CONTROL(digIndex), endpoint & 0x07);
+
+	/* 2b. Enable audio channels on this DIG */
+	uint32_t pktCtl2 = gpuRead32(DIG_AFMT_AUDIO_PACKET_CONTROL2(digIndex));
+	pktCtl2 &= ~0xFF00u;  /* clear AUDIO_CHANNEL_ENABLE */
+	pktCtl2 |= (0x03 << 8);  /* enable 2 channels (stereo) */
+	gpuWrite32(DIG_AFMT_AUDIO_PACKET_CONTROL2(digIndex), pktCtl2);
+
+	/* Phase 3: Setup DTO clock for DP */
+	if (isDP) {
+		uint32_t dtoSrc = gpuRead32(DCCG_AUDIO_DTO_SOURCE);
+		dtoSrc &= ~0x30u;  /* clear DTO_SEL */
+		dtoSrc |= (1u << 4);  /* DTO_SEL = 1 for DP */
+		gpuWrite32(DCCG_AUDIO_DTO_SOURCE, dtoSrc);
+
+		/* DP ref clock ~100 MHz (Vega) */
+		gpuWrite32(DCCG_AUDIO_DTO1_MODULE, 1000000);  /* 100 MHz in 100Hz units */
+		gpuWrite32(DCCG_AUDIO_DTO1_PHASE, 240000);    /* 24 MHz in 100Hz units */
+	}
+
+	/* Phase 4: Enable AZ audio */
+	hpc = azEndpointRead(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL);
+	azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL,
+	                hpc | AZ_HPC_CLOCK_GATING_DISABLE | AZ_HPC_AUDIO_ENABLED);
+	/* Re-enable clock gating while keeping AUDIO_ENABLED */
+	azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL,
+	                (hpc & ~AZ_HPC_CLOCK_GATING_DISABLE) | AZ_HPC_AUDIO_ENABLED);
+
+	FBLOG("enableGPUAudio: AZ AUDIO_ENABLED set for ep=%d", endpoint);
+
+	/* Phase 5: Enable DIG audio formatter and DP secondary packets */
+
+	/* 5a. Enable AFMT clock */
+	gpuWrite32(DIG_AFMT_CNTL(digIndex),
+	           gpuRead32(DIG_AFMT_CNTL(digIndex)) | AFMT_AUDIO_CLOCK_EN);
+
+	if (isDP) {
+		/* 5b. DP audio setup */
+		gpuWrite32(DIG_DP_SEC_AUD_N(digIndex), 0x8000);  /* default N */
+
+		uint32_t timestamp = gpuRead32(DIG_DP_SEC_TIMESTAMP(digIndex));
+		timestamp &= ~0x01u;  /* AUTO_CALC mode */
+		gpuWrite32(DIG_DP_SEC_TIMESTAMP(digIndex), timestamp);
+
+		/* 5c. Enable DP secondary packet types */
+		uint32_t dpSec = gpuRead32(DIG_DP_SEC_CNTL(digIndex));
+		dpSec |= DP_SEC_ASP_ENABLE | DP_SEC_ATP_ENABLE | DP_SEC_AIP_ENABLE;
+		gpuWrite32(DIG_DP_SEC_CNTL(digIndex), dpSec);
+
+		/* Master enable LAST */
+		dpSec |= DP_SEC_STREAM_ENABLE;
+		gpuWrite32(DIG_DP_SEC_CNTL(digIndex), dpSec);
+	}
+
+	/* 5d. Unmute audio */
+	uint32_t pktCtl = gpuRead32(DIG_AFMT_AUDIO_PACKET_CONTROL(digIndex));
+	pktCtl |= AFMT_AUDIO_SAMPLE_SEND;
+	gpuWrite32(DIG_AFMT_AUDIO_PACKET_CONTROL(digIndex), pktCtl);
+
+	FBLOG("enableGPUAudio: DIG%d DP_SEC + AFMT enabled", digIndex);
+
+	return true;
+}
+
+/* ---------- Auto-init: try all endpoints/DIGs ---------- */
+
+void VoodooHDAFramebufferNotifier::initGPUAudioIfNeeded()
+{
+	if (mGPUAudioInitDone) return;
+
+	if (!mapGPUMMIO()) {
+		FBLOG("initGPUAudio: cannot map GPU MMIO");
+		return;
+	}
+
+	mGPUAudioInitDone = true;
+
+	FBLOG("initGPUAudio: === DUMPING GPU AZ STATE (before enable) ===");
+	dumpAZState();
+
+	/*
+	 * Strategy: find which DIG encoder is active (has DP_SEC_STREAM_ENABLE
+	 * or AFMT_AUDIO_CLOCK set by the GPU display driver) and enable audio
+	 * on the corresponding AZ endpoint.
+	 *
+	 * If no DIG is active, try enabling on all endpoints/DIGs that we
+	 * have framebuffer connections for.
+	 */
+	int activeDig = -1;
+	for (int d = 0; d < 6; d++) {
+		uint32_t dpSec = gpuRead32(DIG_DP_SEC_CNTL(d));
+		uint32_t afmtCntl = gpuRead32(DIG_AFMT_CNTL(d));
+		if ((dpSec & DP_SEC_STREAM_ENABLE) || (afmtCntl & AFMT_AUDIO_CLOCK_EN)) {
+			FBLOG("initGPUAudio: DIG%d already active (DP_SEC=0x%08x AFMT=0x%08x)",
+			      d, dpSec, afmtCntl);
+			activeDig = d;
+		}
+	}
+
+	/* Determine speaker allocation from first valid connection */
+	uint8_t spkAlloc = 0x01;  /* default: FL/FR stereo */
+	for (int i = 0; i < mNumConnections; i++) {
+		if (mConnections[i].speakerAllocation) {
+			spkAlloc = mConnections[i].speakerAllocation;
+			break;
+		}
+	}
+
+	if (activeDig >= 0) {
+		/* Enable audio on the already-active DIG's endpoint */
+		uint32_t afmtSrc = gpuRead32(DIG_AFMT_AUDIO_SRC_CONTROL(activeDig));
+		int ep = afmtSrc & 0x07;
+		FBLOG("initGPUAudio: enabling on active DIG%d -> endpoint %d", activeDig, ep);
+		enableGPUAudioEngine(ep, activeDig, true, spkAlloc, 2);
+	} else {
+		/* No DIG active — try enabling on all connected endpoints.
+		 * Use endpoint=DIG index as a simple 1:1 mapping. */
+		FBLOG("initGPUAudio: no active DIG found, trying all endpoints");
+		for (int ep = 0; ep < 6 && ep < mNumConnections; ep++) {
+			enableGPUAudioEngine(ep, ep, true, spkAlloc, 2);
+		}
+	}
+
+	FBLOG("initGPUAudio: === DUMPING GPU AZ STATE (after enable) ===");
+	dumpAZState();
 }

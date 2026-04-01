@@ -87,6 +87,26 @@ private:
 	/* IOPCIDevice of the HDA controller — for PCI topology matching */
 	IOPCIDevice            *mHDAPciDevice;
 
+	/* GPU MMIO direct register access for AZ (Azalia) audio engine */
+	IOPCIDevice            *mGPUPciDevice;
+	IOMemoryMap            *mGPUMMIOMap;
+	volatile uint32_t      *mGPUMMIO;
+	uint32_t                mGPUMMIOSize;
+	bool                    mGPUAudioInitDone;
+
+	bool mapGPUMMIO();
+	void unmapGPUMMIO();
+	uint32_t gpuRead32(uint32_t byteOffset);
+	void gpuWrite32(uint32_t byteOffset, uint32_t value);
+	uint32_t azEndpointRead(int endpoint, uint32_t index);
+	void azEndpointWrite(int endpoint, uint32_t index, uint32_t value);
+	void dumpAZState();
+	bool enableGPUAudioEngine(int endpoint, int digIndex, bool isDP,
+	                          uint8_t speakerAlloc, int numChannels);
+public:
+	void initGPUAudioIfNeeded();
+private:
+
 	/* IOService matching callbacks */
 	static bool gfxMatchedHandler(void *target, void *refCon,
 	                               IOService *newService, IONotifier *notifier);
