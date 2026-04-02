@@ -834,10 +834,6 @@ void VoodooHDAFramebufferNotifier::ensureAudioPipeEnabled(int cad, nid_t pinNid)
 			break;
 		}
 	}
-	/* Re-program GPU AZ registers at every stream start — the GPU display
-	 * driver may configure the DIG encoder AFTER our initial init. */
-	mGPUAudioInitDone = false;
-	initGPUAudioIfNeeded();
 	IOLockUnlock(mLock);
 }
 
@@ -1140,22 +1136,14 @@ void VoodooHDAFramebufferNotifier::dumpAZState()
 	if (!mGPUMMIO) return;
 
 	for (int ep = 0; ep < 7; ep++) {
-		/* Disable clock gating to read registers */
+		/* Read AZ endpoint registers (read-only, no clock gating toggle) */
 		uint32_t hpc = azEndpointRead(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL);
-		azEndpointWrite(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL,
-		                hpc | AZ_HPC_CLOCK_GATING_DISABLE);
-
-		uint32_t hpc2 = azEndpointRead(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL);
 		uint32_t cs = azEndpointRead(ep, AZ_REG_PIN_CONTROL_CHANNEL_SPEAKER);
 		uint32_t desc0 = azEndpointRead(ep, AZ_REG_PIN_CONTROL_AUDIO_DESCRIPTOR(0));
 		uint32_t hbr = azEndpointRead(ep, AZ_REG_PIN_CONTROL_RESPONSE_HBR);
 
 		FBLOG("AZ EP%d: HPC=0x%08x CS=0x%08x DESC0=0x%08x HBR=0x%08x audioEnabled=%d",
-		      ep, hpc2, cs, desc0, hbr, (hpc2 & AZ_HPC_AUDIO_ENABLED) ? 1 : 0);
-
-		/* Re-enable clock gating */
-		azEndpointWrite(ep, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL,
-		                hpc & ~AZ_HPC_CLOCK_GATING_DISABLE);
+		      ep, hpc, cs, desc0, hbr, (hpc & AZ_HPC_AUDIO_ENABLED) ? 1 : 0);
 	}
 
 	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
@@ -1341,71 +1329,9 @@ void VoodooHDAFramebufferNotifier::initGPUAudioIfNeeded()
 
 	mGPUAudioInitDone = true;
 
-	FBLOG("initGPUAudio: === DUMPING GPU AZ STATE (before enable) ===");
-	dumpAZState();
-
-	/*
-	 * Strategy: find which DIG encoder has an active DP/HDMI link by
-	 * checking DIG_BE_EN (enabled), DIG_MODE (DP=0/HDMI=3), and
-	 * DP_LINK_CNTL (trained).  Enable audio only on the active DIG.
-	 */
-	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
-
-	/* Determine speaker allocation from first valid connection */
-	uint8_t spkAlloc = 0x01;  /* default: FL/FR stereo */
-	for (int i = 0; i < mNumConnections; i++) {
-		if (mConnections[i].speakerAllocation) {
-			spkAlloc = mConnections[i].speakerAllocation;
-			break;
-		}
-	}
-
-	int enabledCount = 0;
-	/* Check DIG0-5 (regular stride) + DIG6-8 (irregular offsets) */
-	static const uint32_t digExtraBase[] = { 0x5400, 0x5600, 0x5700 };
-	for (int d = 0; d < 9; d++) {
-		uint32_t base;
-		if (d < 6)
-			base = r->digFeCntl0 + d * r->digStride;
-		else
-			base = DW2B(digExtraBase[d - 6]);
-
-		uint32_t beEnOff = base + (r->digBeEnCntl0 - r->digFeCntl0);
-		uint32_t beCntlOff = base + (r->digBeCntl0 - r->digFeCntl0);
-		uint32_t dpLinkOff = base + (r->dpLinkCntl0 - r->digFeCntl0);
-		uint32_t feCntlOff = base;
-
-		if (beEnOff + 4 > mGPUMMIOSize) continue;
-
-		uint32_t beEn = gpuRead32(beEnOff);
-		uint32_t beCntl = gpuRead32(beCntlOff);
-		uint32_t dpLink = gpuRead32(dpLinkOff);
-		uint32_t feCntl = gpuRead32(feCntlOff);
-
-		bool digEnabled = (beEn & 0x1) != 0;
-		int digMode = (beCntl >> 16) & 0x7;
-		bool dpTrained = (dpLink & 0x10) != 0;
-		bool feStarted = (feCntl & (1 << 10)) != 0;
-		bool isDP = (digMode == 0 || digMode == 5);
-		bool isHDMI = (digMode == 3);
-
-		if (digEnabled && (isDP || isHDMI) && (dpTrained || isHDMI)) {
-			int ep = d < 7 ? d : d;  /* endpoint = DIG index */
-			FBLOG("initGPUAudio: DIG%d is ACTIVE (mode=%d %s dpTrained=%d feStart=%d)",
-			      d, digMode, isDP ? "DP" : "HDMI", dpTrained, feStarted);
-			enableGPUAudioEngine(ep < 7 ? ep : 0, d < 6 ? d : 0, isDP, spkAlloc, 2);
-			enabledCount++;
-		}
-	}
-
-	if (enabledCount == 0) {
-		FBLOG("initGPUAudio: no active DIG found, enabling all EP0-4 as fallback");
-		for (int ep = 0; ep < 5; ep++)
-			enableGPUAudioEngine(ep, ep, true, spkAlloc, 2);
-	} else {
-		FBLOG("initGPUAudio: enabled audio on %d active DIG(s)", enabledCount);
-	}
-
-	FBLOG("initGPUAudio: === DUMPING GPU AZ STATE (after enable) ===");
+	/* Read-only diagnostic dump of GPU AZ state.
+	 * Audio is enabled by correct HDA verbs (ATI paired multichannel),
+	 * not by GPU MMIO writes.  This dump is for debugging only. */
+	FBLOG("initGPUAudio: === GPU AZ STATE (diagnostic) ===");
 	dumpAZState();
 }
