@@ -2093,12 +2093,30 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 	if (mFBNotifier)
 		mFBNotifier->retryEnableAudioPipeAll();
 
+	/* First pass: read pin sense for all engines and find which have presence.
+	 * ATI codecs may report stale presence on previously-connected pins,
+	 * so count total presence to detect the "cable moved" scenario. */
+	bool presence[16] = {};
+	int presenceCount = 0;
+	int lastPresenceIdx = -1;
+
+	for (int i = 0; i < mNumHDMIEngines; i++) {
+		HDMIEngineSlot *slot = &mHDMIEngines[i];
+		if (!slot->engine) continue;
+		UInt32 pinSense = sendCommand(HDA_CMD_GET_PIN_SENSE(slot->cad, slot->pinNid), slot->cad);
+		presence[i] = (pinSense & (1U << 31)) != 0;
+		if (presence[i]) {
+			presenceCount++;
+			lastPresenceIdx = i;
+		}
+	}
+
+	/* Second pass: update status and inject ELD */
 	for (int i = 0; i < mNumHDMIEngines; i++) {
 		HDMIEngineSlot *slot = &mHDMIEngines[i];
 		if (!slot->engine) continue;
 
-		UInt32 pinSense = sendCommand(HDA_CMD_GET_PIN_SENSE(slot->cad, slot->pinNid), slot->cad);
-		bool hasPresence = (pinSense & (1U << 31)) != 0;
+		bool hasPresence = presence[i];
 
 		if (hasPresence && !slot->activated) {
 			IOLog("VoodooHDA DBG: HDMI hot-plug: activating engine for pin=%d\n", slot->pinNid);
@@ -2108,17 +2126,21 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 				slot->activated = true;
 		}
 
-		/* Inject EDID-based ELD into any pin that gains presence,
-		 * regardless of activation state (engines are pre-activated at init) */
 		if (hasPresence && mFBNotifier)
 			mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
 
-		/* Update engine description to show connection status */
+		/* Update engine description.  If multiple pins report presence
+		 * (stale ATI pin sense), only the most recently detected one
+		 * is shown as "connected" — the rest get "no display". */
+		bool showConnected = hasPresence;
+		if (presenceCount > 1 && hasPresence && i != lastPresenceIdx)
+			showConnected = false;
+
 		char desc[80];
 		snprintf(desc, sizeof(desc), "%s: HDMI %d (%s)",
 		         mControllerName ? mControllerName : "GPU",
 		         slot->pinNid,
-		         hasPresence ? "connected" : "no display");
+		         showConnected ? "connected" : "no display");
 		slot->engine->setProperty("IOAudioEngineDescription", desc);
 	}
 }
