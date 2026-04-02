@@ -89,7 +89,7 @@
 			<key>IOPCIMatch</key>
 			<string>0xAAF81002 0xAAF01002 0xABF81002 0xAB201002 0xAAE01002 0xAB381002 0xAB281002</string>
 			<key>IOProbeScore</key>
-			<integer>100000</integer>
+			<integer>0</integer>
 			<key>IOProviderClass</key>
 			<string>IOPCIDevice</string>
 			<key>IOUserClientClass</key>
