@@ -93,6 +93,7 @@ private:
 	volatile uint32_t      *mGPUMMIO;
 	uint32_t                mGPUMMIOSize;
 	bool                    mGPUAudioInitDone;
+	const void             *mRegs;  /* -> AZRegOffsets, selected per GPU */
 
 	bool mapGPUMMIO();
 	void unmapGPUMMIO();

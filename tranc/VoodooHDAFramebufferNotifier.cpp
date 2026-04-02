@@ -45,6 +45,7 @@ bool VoodooHDAFramebufferNotifier::init(VoodooHDADevice *device)
 	mGPUMMIO = NULL;
 	mGPUMMIOSize = 0;
 	mGPUAudioInitDone = false;
+	mRegs = NULL;
 	mLock = IOLockAlloc();
 	if (!mLock) return false;
 
@@ -866,26 +867,15 @@ VoodooHDAFramebufferNotifier::findConnection(IOService *fb)
  * by GPU-side AZ registers in GPU BAR5 MMIO space.  Without programming
  * these registers, DIP_SIZE returns 0 and no audio reaches the display.
  *
- * Register offsets are for AMD Vega 10 (DCE 12.0), derived from Linux
- * amdgpu driver (dce_12_0_offset.h, dce_audio.c).
+ * Register offsets differ between GPU generations:
+ *   - Polaris (DCE 11.x): absolute dword offsets, from dce_11_0_d.h
+ *   - Vega   (DCE 12.0):  segment-relative, from dce_12_0_offset.h
  * ======================================================================== */
 
-/*
- * Vega 10 DCE register segment bases (dword offsets from BAR5 start).
- * From Linux: drivers/gpu/drm/amd/include/asic_reg/vega10/vg10_ip_offset.h
- */
-#define VEGA10_DCE_SEG1_BASE  0x000000C0u  /* DCCG registers */
-#define VEGA10_DCE_SEG2_BASE  0x000034C0u  /* DCE AZ/AFMT/DP registers */
+/* Convert dword offset to byte offset */
+#define DW2B(dw)  ((dw) * 4)
 
-/* Convert DCE segment + dword offset to BAR5 byte offset */
-#define DCE_REG(seg_base, dw_off)  (((seg_base) + (dw_off)) * 4)
-
-/* Azalia endpoint indirect registers (BASE_IDX=2, per-endpoint) */
-#define AZ_ENDPOINT_STRIDE  6  /* dword stride between endpoints */
-#define AZ_EP_INDEX(n)  DCE_REG(VEGA10_DCE_SEG2_BASE, 0x0480 + (n) * AZ_ENDPOINT_STRIDE)
-#define AZ_EP_DATA(n)   DCE_REG(VEGA10_DCE_SEG2_BASE, 0x0481 + (n) * AZ_ENDPOINT_STRIDE)
-
-/* AZ indirect register indices (written to ENDPOINT_INDEX) */
+/* AZ indirect register indices (written to ENDPOINT_INDEX — same for all DCE) */
 #define AZ_REG_PIN_CONTROL_CHANNEL_SPEAKER          0x25
 #define AZ_REG_PIN_CONTROL_AUDIO_DESCRIPTOR(n)      (0x28 + (n))
 #define AZ_REG_PIN_CONTROL_MULTICHANNEL_ENABLE       0x36
@@ -904,20 +894,6 @@ VoodooHDAFramebufferNotifier::findConnection(IOService *fb)
 #define AZ_CS_HDMI_CONNECTION        (1u << 16)
 #define AZ_CS_DP_CONNECTION          (1u << 17)
 
-/* Per-DIG encoder registers (BASE_IDX=2) */
-#define DIG_STRIDE          0x100  /* dword stride between DIG0..DIG6 */
-#define DIG0_BASE           0x18C0u
-
-#define DIG_AFMT_AUDIO_PACKET_CONTROL(d)   DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0x00 + (d)*DIG_STRIDE)
-#define DIG_AFMT_AUDIO_PACKET_CONTROL2(d)  DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0xD2 + (d)*DIG_STRIDE)
-#define DIG_AFMT_AUDIO_SRC_CONTROL(d)      DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0x03 + (d)*DIG_STRIDE)
-#define DIG_AFMT_CNTL(d)                   DCE_REG(VEGA10_DCE_SEG2_BASE, DIG0_BASE + 0x3C + (d)*DIG_STRIDE)
-
-/* DP secondary data packet control (per-DIG, BASE_IDX=2) */
-#define DIG_DP_SEC_CNTL(d)       DCE_REG(VEGA10_DCE_SEG2_BASE, 0x1941 + (d)*DIG_STRIDE)
-#define DIG_DP_SEC_AUD_N(d)      DCE_REG(VEGA10_DCE_SEG2_BASE, 0x1947 + (d)*DIG_STRIDE)
-#define DIG_DP_SEC_TIMESTAMP(d)  DCE_REG(VEGA10_DCE_SEG2_BASE, 0x194B + (d)*DIG_STRIDE)
-
 /* DP_SEC_CNTL bits */
 #define DP_SEC_STREAM_ENABLE  (1u << 0)
 #define DP_SEC_ASP_ENABLE     (1u << 4)
@@ -929,12 +905,87 @@ VoodooHDAFramebufferNotifier::findConnection(IOService *fb)
 #define AFMT_AUDIO_SAMPLE_SEND   (1u << 0)
 #define AFMT_AUDIO_CLOCK_EN      (1u << 0)
 
-/* DCCG audio DTO registers (BASE_IDX=1) */
-#define DCCG_AUDIO_DTO_SOURCE   DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AB)
-#define DCCG_AUDIO_DTO0_PHASE   DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AC)
-#define DCCG_AUDIO_DTO0_MODULE  DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AD)
-#define DCCG_AUDIO_DTO1_PHASE   DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AE)
-#define DCCG_AUDIO_DTO1_MODULE  DCE_REG(VEGA10_DCE_SEG1_BASE, 0x00AF)
+/*
+ * Per-GPU register offset tables.
+ * All values are BYTE offsets into GPU BAR5 MMIO.
+ */
+struct AZRegOffsets {
+	/* AZ endpoint indirect registers — INDEX/DATA pairs, per-endpoint */
+	uint32_t azEpIndex0;    /* endpoint 0 INDEX byte offset */
+	uint32_t azEpData0;     /* endpoint 0 DATA byte offset */
+	uint32_t azEpStride;    /* byte stride between endpoints */
+
+	/* AFMT per-DIG encoder */
+	uint32_t afmtPktCtl0;   /* AFMT_AUDIO_PACKET_CONTROL DIG0 */
+	uint32_t afmtPktCtl2_0; /* AFMT_AUDIO_PACKET_CONTROL2 DIG0 */
+	uint32_t afmtSrcCtl0;   /* AFMT_AUDIO_SRC_CONTROL DIG0 */
+	uint32_t afmtCntl0;     /* AFMT_CNTL DIG0 */
+	uint32_t digStride;     /* byte stride between DIGs */
+
+	/* DP secondary packet control per-DIG */
+	uint32_t dpSecCntl0;    /* DP_SEC_CNTL DIG0/DP0 */
+	uint32_t dpSecAudN0;    /* DP_SEC_AUD_N DIG0/DP0 */
+	uint32_t dpSecTimestamp0; /* DP_SEC_TIMESTAMP DIG0/DP0 */
+
+	/* DCCG audio DTO */
+	uint32_t dccgDtoSource;
+	uint32_t dccgDto0Phase;
+	uint32_t dccgDto0Module;
+	uint32_t dccgDto1Phase;
+	uint32_t dccgDto1Module;
+};
+
+/*
+ * Polaris (DCE 11.0 / 11.2) — RX 470/480/570/580/590, Ellesmere, Baffin
+ * Absolute dword offsets from dce_11_0_d.h / dce_11_2_d.h
+ */
+static const AZRegOffsets kPolarisRegs = {
+	.azEpIndex0     = DW2B(0x17A8),
+	.azEpData0      = DW2B(0x17A9),
+	.azEpStride     = DW2B(4),       /* 4 dwords between endpoints */
+
+	.afmtPktCtl0    = DW2B(0x4A42),
+	.afmtPktCtl2_0  = DW2B(0x4A14),
+	.afmtSrcCtl0    = DW2B(0x4A45),
+	.afmtCntl0      = DW2B(0x4A7E),
+	.digStride      = DW2B(0x100),
+
+	.dpSecCntl0     = DW2B(0x4AC3),
+	.dpSecAudN0     = DW2B(0x4AC9),
+	.dpSecTimestamp0 = DW2B(0x4ACD),
+
+	.dccgDtoSource  = DW2B(0x016B),
+	.dccgDto0Phase  = DW2B(0x016C),
+	.dccgDto0Module = DW2B(0x016D),
+	.dccgDto1Phase  = DW2B(0x016E),
+	.dccgDto1Module = DW2B(0x016F),
+};
+
+/*
+ * Vega 10 (DCE 12.0) — RX Vega 56/64
+ * SOC15: segment base + relative offset.  Seg1=0xC0, Seg2=0x34C0
+ */
+static const AZRegOffsets kVega10Regs = {
+	.azEpIndex0     = DW2B(0x34C0 + 0x0480),
+	.azEpData0      = DW2B(0x34C0 + 0x0481),
+	.azEpStride     = DW2B(6),
+
+	.afmtPktCtl0    = DW2B(0x34C0 + 0x18C0),
+	.afmtPktCtl2_0  = DW2B(0x34C0 + 0x1892),
+	.afmtSrcCtl0    = DW2B(0x34C0 + 0x18C3),
+	.afmtCntl0      = DW2B(0x34C0 + 0x18FC),
+	.digStride      = DW2B(0x100),
+
+	.dpSecCntl0     = DW2B(0x34C0 + 0x1941),
+	.dpSecAudN0     = DW2B(0x34C0 + 0x1947),
+	.dpSecTimestamp0 = DW2B(0x34C0 + 0x194B),
+
+	.dccgDtoSource  = DW2B(0x00C0 + 0x00AB),
+	.dccgDto0Phase  = DW2B(0x00C0 + 0x00AC),
+	.dccgDto0Module = DW2B(0x00C0 + 0x00AD),
+	.dccgDto1Phase  = DW2B(0x00C0 + 0x00AE),
+	.dccgDto1Module = DW2B(0x00C0 + 0x00AF),
+};
 
 /* ---------- GPU MMIO mapping ---------- */
 
@@ -976,9 +1027,22 @@ bool VoodooHDAFramebufferNotifier::mapGPUMMIO()
 		return false;
 	}
 
+	UInt16 gpuDeviceId = gpuDev->configRead16(kIOPCIConfigDeviceID);
 	FBLOG("mapGPUMMIO: found GPU device=%p vendor=%04x device=%04x",
-	      gpuDev, gpuDev->configRead16(kIOPCIConfigVendorID),
-	      gpuDev->configRead16(kIOPCIConfigDeviceID));
+	      gpuDev, gpuDev->configRead16(kIOPCIConfigVendorID), gpuDeviceId);
+
+	/* Select register offset table based on GPU generation.
+	 * Polaris (DCE 11.x): 67xx device IDs (Ellesmere/Baffin/Lexa)
+	 * Vega 10 (DCE 12.0): 687x/686x device IDs */
+	if ((gpuDeviceId & 0xFF00) == 0x6700 || /* Polaris 10/11/12 */
+	    (gpuDeviceId & 0xFF00) == 0x6600 || /* Polaris 12/Lexa */
+	    (gpuDeviceId & 0xFF00) == 0x6900)   /* Tonga/Fiji */
+		mRegs = &kPolarisRegs;
+	else
+		mRegs = &kVega10Regs;  /* Vega and newer — best guess */
+
+	FBLOG("mapGPUMMIO: using %s register offsets",
+	      mRegs == &kPolarisRegs ? "Polaris DCE11" : "Vega DCE12");
 
 	/* Find the MMIO BAR (typically BAR5, ~256KB-512KB).
 	 * BAR0/1 = VRAM (huge), BAR2/3 = doorbell, BAR5 = MMIO registers */
@@ -1039,14 +1103,16 @@ void VoodooHDAFramebufferNotifier::gpuWrite32(uint32_t byteOffset, uint32_t valu
 
 uint32_t VoodooHDAFramebufferNotifier::azEndpointRead(int ep, uint32_t index)
 {
-	gpuWrite32(AZ_EP_INDEX(ep), index);
-	return gpuRead32(AZ_EP_DATA(ep));
+	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
+	gpuWrite32(r->azEpIndex0 + ep * r->azEpStride, index);
+	return gpuRead32(r->azEpData0 + ep * r->azEpStride);
 }
 
 void VoodooHDAFramebufferNotifier::azEndpointWrite(int ep, uint32_t index, uint32_t value)
 {
-	gpuWrite32(AZ_EP_INDEX(ep), index);
-	gpuWrite32(AZ_EP_DATA(ep), value);
+	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
+	gpuWrite32(r->azEpIndex0 + ep * r->azEpStride, index);
+	gpuWrite32(r->azEpData0 + ep * r->azEpStride, value);
 }
 
 /* ---------- Diagnostic dump of AZ state ---------- */
@@ -1074,20 +1140,22 @@ void VoodooHDAFramebufferNotifier::dumpAZState()
 		                hpc & ~AZ_HPC_CLOCK_GATING_DISABLE);
 	}
 
+	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
+
 	/* Dump DIG/AFMT/DP_SEC state for first 6 DIGs */
 	for (int d = 0; d < 6; d++) {
-		uint32_t afmtSrc = gpuRead32(DIG_AFMT_AUDIO_SRC_CONTROL(d));
-		uint32_t afmtCntl = gpuRead32(DIG_AFMT_CNTL(d));
-		uint32_t dpSec = gpuRead32(DIG_DP_SEC_CNTL(d));
-		uint32_t pktCtl = gpuRead32(DIG_AFMT_AUDIO_PACKET_CONTROL(d));
+		uint32_t afmtSrc = gpuRead32(r->afmtSrcCtl0 + d * r->digStride);
+		uint32_t afmtCntl = gpuRead32(r->afmtCntl0 + d * r->digStride);
+		uint32_t dpSec = gpuRead32(r->dpSecCntl0 + d * r->digStride);
+		uint32_t pktCtl = gpuRead32(r->afmtPktCtl0 + d * r->digStride);
 		FBLOG("AZ DIG%d: AFMT_SRC=0x%08x AFMT_CNTL=0x%08x DP_SEC=0x%08x PKT_CTL=0x%08x",
 		      d, afmtSrc, afmtCntl, dpSec, pktCtl);
 	}
 
 	/* DCCG DTO */
-	uint32_t dtoSrc = gpuRead32(DCCG_AUDIO_DTO_SOURCE);
-	uint32_t dto1Phase = gpuRead32(DCCG_AUDIO_DTO1_PHASE);
-	uint32_t dto1Mod = gpuRead32(DCCG_AUDIO_DTO1_MODULE);
+	uint32_t dtoSrc = gpuRead32(r->dccgDtoSource);
+	uint32_t dto1Phase = gpuRead32(r->dccgDto1Phase);
+	uint32_t dto1Mod = gpuRead32(r->dccgDto1Module);
 	FBLOG("AZ DCCG: DTO_SRC=0x%08x DTO1_PHASE=0x%08x DTO1_MOD=0x%08x",
 	      dtoSrc, dto1Phase, dto1Mod);
 }
@@ -1138,27 +1206,29 @@ bool VoodooHDAFramebufferNotifier::enableGPUAudioEngine(
 	hpc &= ~AZ_HPC_CLOCK_GATING_DISABLE;
 	azEndpointWrite(endpoint, AZ_REG_PIN_CONTROL_HOT_PLUG_CONTROL, hpc);
 
+	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
+
 	/* Phase 2: Map DIG encoder to audio endpoint */
 
 	/* 2a. Set audio source: map DIG to this endpoint */
-	gpuWrite32(DIG_AFMT_AUDIO_SRC_CONTROL(digIndex), endpoint & 0x07);
+	gpuWrite32(r->afmtSrcCtl0 + digIndex * r->digStride, endpoint & 0x07);
 
 	/* 2b. Enable audio channels on this DIG */
-	uint32_t pktCtl2 = gpuRead32(DIG_AFMT_AUDIO_PACKET_CONTROL2(digIndex));
+	uint32_t pktCtl2 = gpuRead32(r->afmtPktCtl2_0 + digIndex * r->digStride);
 	pktCtl2 &= ~0xFF00u;  /* clear AUDIO_CHANNEL_ENABLE */
 	pktCtl2 |= (0x03 << 8);  /* enable 2 channels (stereo) */
-	gpuWrite32(DIG_AFMT_AUDIO_PACKET_CONTROL2(digIndex), pktCtl2);
+	gpuWrite32(r->afmtPktCtl2_0 + digIndex * r->digStride, pktCtl2);
 
 	/* Phase 3: Setup DTO clock for DP */
 	if (isDP) {
-		uint32_t dtoSrc = gpuRead32(DCCG_AUDIO_DTO_SOURCE);
+		uint32_t dtoSrc = gpuRead32(r->dccgDtoSource);
 		dtoSrc &= ~0x30u;  /* clear DTO_SEL */
 		dtoSrc |= (1u << 4);  /* DTO_SEL = 1 for DP */
-		gpuWrite32(DCCG_AUDIO_DTO_SOURCE, dtoSrc);
+		gpuWrite32(r->dccgDtoSource, dtoSrc);
 
-		/* DP ref clock ~100 MHz (Vega) */
-		gpuWrite32(DCCG_AUDIO_DTO1_MODULE, 1000000);  /* 100 MHz in 100Hz units */
-		gpuWrite32(DCCG_AUDIO_DTO1_PHASE, 240000);    /* 24 MHz in 100Hz units */
+		/* DP ref clock ~100 MHz */
+		gpuWrite32(r->dccgDto1Module, 1000000);  /* 100 MHz in 100Hz units */
+		gpuWrite32(r->dccgDto1Phase, 240000);    /* 24 MHz in 100Hz units */
 	}
 
 	/* Phase 4: Enable AZ audio */
@@ -1174,31 +1244,31 @@ bool VoodooHDAFramebufferNotifier::enableGPUAudioEngine(
 	/* Phase 5: Enable DIG audio formatter and DP secondary packets */
 
 	/* 5a. Enable AFMT clock */
-	gpuWrite32(DIG_AFMT_CNTL(digIndex),
-	           gpuRead32(DIG_AFMT_CNTL(digIndex)) | AFMT_AUDIO_CLOCK_EN);
+	gpuWrite32(r->afmtCntl0 + digIndex * r->digStride,
+	           gpuRead32(r->afmtCntl0 + digIndex * r->digStride) | AFMT_AUDIO_CLOCK_EN);
 
 	if (isDP) {
 		/* 5b. DP audio setup */
-		gpuWrite32(DIG_DP_SEC_AUD_N(digIndex), 0x8000);  /* default N */
+		gpuWrite32(r->dpSecAudN0 + digIndex * r->digStride, 0x8000);  /* default N */
 
-		uint32_t timestamp = gpuRead32(DIG_DP_SEC_TIMESTAMP(digIndex));
+		uint32_t timestamp = gpuRead32(r->dpSecTimestamp0 + digIndex * r->digStride);
 		timestamp &= ~0x01u;  /* AUTO_CALC mode */
-		gpuWrite32(DIG_DP_SEC_TIMESTAMP(digIndex), timestamp);
+		gpuWrite32(r->dpSecTimestamp0 + digIndex * r->digStride, timestamp);
 
 		/* 5c. Enable DP secondary packet types */
-		uint32_t dpSec = gpuRead32(DIG_DP_SEC_CNTL(digIndex));
+		uint32_t dpSec = gpuRead32(r->dpSecCntl0 + digIndex * r->digStride);
 		dpSec |= DP_SEC_ASP_ENABLE | DP_SEC_ATP_ENABLE | DP_SEC_AIP_ENABLE;
-		gpuWrite32(DIG_DP_SEC_CNTL(digIndex), dpSec);
+		gpuWrite32(r->dpSecCntl0 + digIndex * r->digStride, dpSec);
 
 		/* Master enable LAST */
 		dpSec |= DP_SEC_STREAM_ENABLE;
-		gpuWrite32(DIG_DP_SEC_CNTL(digIndex), dpSec);
+		gpuWrite32(r->dpSecCntl0 + digIndex * r->digStride, dpSec);
 	}
 
 	/* 5d. Unmute audio */
-	uint32_t pktCtl = gpuRead32(DIG_AFMT_AUDIO_PACKET_CONTROL(digIndex));
+	uint32_t pktCtl = gpuRead32(r->afmtPktCtl0 + digIndex * r->digStride);
 	pktCtl |= AFMT_AUDIO_SAMPLE_SEND;
-	gpuWrite32(DIG_AFMT_AUDIO_PACKET_CONTROL(digIndex), pktCtl);
+	gpuWrite32(r->afmtPktCtl0 + digIndex * r->digStride, pktCtl);
 
 	FBLOG("enableGPUAudio: DIG%d DP_SEC + AFMT enabled", digIndex);
 
@@ -1229,10 +1299,11 @@ void VoodooHDAFramebufferNotifier::initGPUAudioIfNeeded()
 	 * If no DIG is active, try enabling on all endpoints/DIGs that we
 	 * have framebuffer connections for.
 	 */
+	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
 	int activeDig = -1;
 	for (int d = 0; d < 6; d++) {
-		uint32_t dpSec = gpuRead32(DIG_DP_SEC_CNTL(d));
-		uint32_t afmtCntl = gpuRead32(DIG_AFMT_CNTL(d));
+		uint32_t dpSec = gpuRead32(r->dpSecCntl0 + d * r->digStride);
+		uint32_t afmtCntl = gpuRead32(r->afmtCntl0 + d * r->digStride);
 		if ((dpSec & DP_SEC_STREAM_ENABLE) || (afmtCntl & AFMT_AUDIO_CLOCK_EN)) {
 			FBLOG("initGPUAudio: DIG%d already active (DP_SEC=0x%08x AFMT=0x%08x)",
 			      d, dpSec, afmtCntl);
@@ -1251,7 +1322,7 @@ void VoodooHDAFramebufferNotifier::initGPUAudioIfNeeded()
 
 	if (activeDig >= 0) {
 		/* Enable audio on the already-active DIG's endpoint */
-		uint32_t afmtSrc = gpuRead32(DIG_AFMT_AUDIO_SRC_CONTROL(activeDig));
+		uint32_t afmtSrc = gpuRead32(r->afmtSrcCtl0 + activeDig * r->digStride);
 		int ep = afmtSrc & 0x07;
 		FBLOG("initGPUAudio: enabling on active DIG%d -> endpoint %d", activeDig, ep);
 		enableGPUAudioEngine(ep, activeDig, true, spkAlloc, 2);
