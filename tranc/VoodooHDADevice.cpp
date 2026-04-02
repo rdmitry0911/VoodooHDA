@@ -2725,10 +2725,11 @@ void VoodooHDADevice::channelStop(Channel *channel, const bool shouldLock)
 	if (shouldLock)
 		LOCK();
 
-	/* Notify GPU display engine that HDMI audio streaming has stopped */
-	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 && mFBNotifier) {
+	if (channel->pcmDevice && channel->pcmDevice->digital >= 2) {
 		nid_t pin = getHDMIPinForChannel(channel);
-		if (pin != (nid_t)-1)
+		IOLog("VoodooHDA DBG: channelStop HDMI pin=%d streamId=%d\n",
+		      pin, channel->streamId);
+		if (pin != (nid_t)-1 && mFBNotifier)
 			mFBNotifier->notifyStreamingState(cad, pin, false);
 	}
 
@@ -2752,6 +2753,12 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 	if (shouldLock)
 		LOCK();
 
+	if (channel->pcmDevice && channel->pcmDevice->digital >= 2) {
+		nid_t pin = getHDMIPinForChannel(channel);
+		IOLog("VoodooHDA DBG: channelStart HDMI pin=%d streamId=%d speed=%d\n",
+		      pin, channel->streamId, (int)channel->speed);
+	}
+
 	streamStop(channel);
 	streamReset(channel);
 	bdlSetup(channel);
@@ -2759,9 +2766,6 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 	streamSetup(channel);
 	streamStart(channel);
 
-	/* Notify GPU display engine that HDMI audio streaming has started.
-	 * The GPU needs this to begin encoding Audio InfoFrames into the
-	 * HDMI signal — without it the monitor won't decode audio. */
 	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 && mFBNotifier) {
 		nid_t pin = getHDMIPinForChannel(channel);
 		if (pin != (nid_t)-1)
@@ -3054,9 +3058,11 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 				int enable = (base_slot < totalchn) ? 1 : 0;
 				UInt32 val = (base_slot << 4) | enable;
 				sendCommand(ATI_CMD_12BIT(cad, nid_pin, ati_paired_verbs[k], val), cad);
+				IOLog("VoodooHDA HDMI: ATI MC%d%d=0x%02x\n", base_slot, base_slot+1, val);
 			}
 
 			sendCommand(ATI_CMD_12BIT(cad, nid_pin, ATI_VERB_SET_CHANNEL_ALLOCATION, ca), cad);
+			IOLog("VoodooHDA HDMI: ATI CA=0x%02x pinCtrl=0x%02x\n", ca, widget_pin->pin.ctrl);
 
 			if (HDA_PARAM_PIN_CAP_HDMI(widget_pin->pin.cap) &&
 				HDA_PARAM_PIN_CAP_HBR(widget_pin->pin.cap)) {
