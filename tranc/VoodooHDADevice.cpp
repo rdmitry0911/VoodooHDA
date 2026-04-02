@@ -399,11 +399,10 @@ IOService *VoodooHDADevice::probe(IOService *provider, SInt32 *score)
 	IOLog("VoodooHDA DBG: Controller: %s (vendor=%04x device=%04x)\n", mControllerName, vendorId, deviceId);
 	errorMsg("Controller: %s (vendor ID: %04x, device ID: %04x)\n", mControllerName, vendorId, deviceId);
 
-	/* For AMD/ATI HDMI audio, use a low probe score so that AppleGFXHDA
-	 * wins when it supports the device.  VoodooHDA remains as fallback
-	 * for devices that AppleGFXHDA doesn't handle. */
+	/* Beat AppleGFXHDA for AMD/ATI HDMI audio — VoodooHDA programs
+	 * GPU AZ registers directly via MMIO to enable audio pipeline. */
 	if (vendorId == 0x1002 && score)
-		*score = 0;
+		*score = 5000000;
 
 	subVendorId = mPciNub->configRead16(kIOPCIConfigSubSystemVendorID);
 	subDeviceId = mPciNub->configRead16(kIOPCIConfigSubSystemID);
