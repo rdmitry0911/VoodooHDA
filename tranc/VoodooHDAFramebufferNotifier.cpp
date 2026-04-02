@@ -927,6 +927,12 @@ struct AZRegOffsets {
 	uint32_t dpSecAudN0;    /* DP_SEC_AUD_N DIG0/DP0 */
 	uint32_t dpSecTimestamp0; /* DP_SEC_TIMESTAMP DIG0/DP0 */
 
+	/* DIG encoder status (per-DIG, same stride as AFMT) */
+	uint32_t digFeCntl0;     /* DIG_FE_CNTL DIG0: bit10=DIG_START, [2:0]=SOURCE_SELECT */
+	uint32_t digBeCntl0;     /* DIG_BE_CNTL DIG0: [18:16]=DIG_MODE (0=DP,3=HDMI) */
+	uint32_t digBeEnCntl0;   /* DIG_BE_EN_CNTL DIG0: bit0=DIG_ENABLE */
+	uint32_t dpLinkCntl0;    /* DP_LINK_CNTL DIG0: bit4=TRAINING_COMPLETE, bit8=LINK_STATUS */
+
 	/* DCCG audio DTO */
 	uint32_t dccgDtoSource;
 	uint32_t dccgDto0Phase;
@@ -954,6 +960,11 @@ static const AZRegOffsets kPolarisRegs = {
 	.dpSecAudN0     = DW2B(0x4AC9),
 	.dpSecTimestamp0 = DW2B(0x4ACD),
 
+	.digFeCntl0     = DW2B(0x4A00),
+	.digBeCntl0     = DW2B(0x4A47),
+	.digBeEnCntl0   = DW2B(0x4A48),
+	.dpLinkCntl0    = DW2B(0x4AA0),
+
 	.dccgDtoSource  = DW2B(0x016B),
 	.dccgDto0Phase  = DW2B(0x016C),
 	.dccgDto0Module = DW2B(0x016D),
@@ -979,6 +990,11 @@ static const AZRegOffsets kVega10Regs = {
 	.dpSecCntl0     = DW2B(0x34C0 + 0x1941),
 	.dpSecAudN0     = DW2B(0x34C0 + 0x1947),
 	.dpSecTimestamp0 = DW2B(0x34C0 + 0x194B),
+
+	.digFeCntl0     = DW2B(0x34C0 + 0x1880),
+	.digBeCntl0     = DW2B(0x34C0 + 0x18C7),
+	.digBeEnCntl0   = DW2B(0x34C0 + 0x18C8),
+	.dpLinkCntl0    = DW2B(0x34C0 + 0x1920),
 
 	.dccgDtoSource  = DW2B(0x00C0 + 0x00AB),
 	.dccgDto0Phase  = DW2B(0x00C0 + 0x00AC),
@@ -1142,14 +1158,28 @@ void VoodooHDAFramebufferNotifier::dumpAZState()
 
 	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
 
-	/* Dump DIG/AFMT/DP_SEC state for first 6 DIGs */
+	/* Dump DIG encoder status + AFMT/DP_SEC for first 6 DIGs */
 	for (int d = 0; d < 6; d++) {
+		uint32_t feCntl = gpuRead32(r->digFeCntl0 + d * r->digStride);
+		uint32_t beCntl = gpuRead32(r->digBeCntl0 + d * r->digStride);
+		uint32_t beEn = gpuRead32(r->digBeEnCntl0 + d * r->digStride);
+		uint32_t dpLink = gpuRead32(r->dpLinkCntl0 + d * r->digStride);
 		uint32_t afmtSrc = gpuRead32(r->afmtSrcCtl0 + d * r->digStride);
 		uint32_t afmtCntl = gpuRead32(r->afmtCntl0 + d * r->digStride);
 		uint32_t dpSec = gpuRead32(r->dpSecCntl0 + d * r->digStride);
 		uint32_t pktCtl = gpuRead32(r->afmtPktCtl0 + d * r->digStride);
-		FBLOG("AZ DIG%d: AFMT_SRC=0x%08x AFMT_CNTL=0x%08x DP_SEC=0x%08x PKT_CTL=0x%08x",
-		      d, afmtSrc, afmtCntl, dpSec, pktCtl);
+
+		bool digEnabled = (beEn & 0x1) != 0;
+		int digMode = (beCntl >> 16) & 0x7;  /* 0=DP, 3=HDMI */
+		bool feStarted = (feCntl & (1 << 10)) != 0;
+		bool dpTrained = (dpLink & 0x10) != 0;
+		bool dpActive = (dpLink & 0x100) != 0;
+		int crtcSrc = feCntl & 0x7;
+
+		FBLOG("AZ DIG%d: BE_EN=%d mode=%d FE_START=%d crtc=%d dpTrained=%d dpActive=%d | AFMT_SRC=%x AFMT_CNTL=%x DP_SEC=%x PKT=%x",
+		      d, digEnabled, digMode, feStarted, crtcSrc,
+		      dpTrained, dpActive,
+		      afmtSrc, afmtCntl, dpSec, pktCtl);
 	}
 
 	/* DCCG DTO */
@@ -1292,24 +1322,11 @@ void VoodooHDAFramebufferNotifier::initGPUAudioIfNeeded()
 	dumpAZState();
 
 	/*
-	 * Strategy: find which DIG encoder is active (has DP_SEC_STREAM_ENABLE
-	 * or AFMT_AUDIO_CLOCK set by the GPU display driver) and enable audio
-	 * on the corresponding AZ endpoint.
-	 *
-	 * If no DIG is active, try enabling on all endpoints/DIGs that we
-	 * have framebuffer connections for.
+	 * Strategy: find which DIG encoder has an active DP/HDMI link by
+	 * checking DIG_BE_EN (enabled), DIG_MODE (DP=0/HDMI=3), and
+	 * DP_LINK_CNTL (trained).  Enable audio only on the active DIG.
 	 */
 	const AZRegOffsets *r = (const AZRegOffsets *)mRegs;
-	int activeDig = -1;
-	for (int d = 0; d < 6; d++) {
-		uint32_t dpSec = gpuRead32(r->dpSecCntl0 + d * r->digStride);
-		uint32_t afmtCntl = gpuRead32(r->afmtCntl0 + d * r->digStride);
-		if ((dpSec & DP_SEC_STREAM_ENABLE) || (afmtCntl & AFMT_AUDIO_CLOCK_EN)) {
-			FBLOG("initGPUAudio: DIG%d already active (DP_SEC=0x%08x AFMT=0x%08x)",
-			      d, dpSec, afmtCntl);
-			activeDig = d;
-		}
-	}
 
 	/* Determine speaker allocation from first valid connection */
 	uint8_t spkAlloc = 0x01;  /* default: FL/FR stereo */
@@ -1320,19 +1337,34 @@ void VoodooHDAFramebufferNotifier::initGPUAudioIfNeeded()
 		}
 	}
 
-	if (activeDig >= 0) {
-		/* Enable audio on the already-active DIG's endpoint */
-		uint32_t afmtSrc = gpuRead32(r->afmtSrcCtl0 + activeDig * r->digStride);
-		int ep = afmtSrc & 0x07;
-		FBLOG("initGPUAudio: enabling on active DIG%d -> endpoint %d", activeDig, ep);
-		enableGPUAudioEngine(ep, activeDig, true, spkAlloc, 2);
-	} else {
-		/* No DIG active — try enabling on all connected endpoints.
-		 * Use endpoint=DIG index as a simple 1:1 mapping. */
-		FBLOG("initGPUAudio: no active DIG found, trying all endpoints");
-		for (int ep = 0; ep < 6 && ep < mNumConnections; ep++) {
-			enableGPUAudioEngine(ep, ep, true, spkAlloc, 2);
+	int enabledCount = 0;
+	for (int d = 0; d < 6; d++) {
+		uint32_t beEn = gpuRead32(r->digBeEnCntl0 + d * r->digStride);
+		uint32_t beCntl = gpuRead32(r->digBeCntl0 + d * r->digStride);
+		uint32_t dpLink = gpuRead32(r->dpLinkCntl0 + d * r->digStride);
+		uint32_t feCntl = gpuRead32(r->digFeCntl0 + d * r->digStride);
+
+		bool digEnabled = (beEn & 0x1) != 0;
+		int digMode = (beCntl >> 16) & 0x7;
+		bool dpTrained = (dpLink & 0x10) != 0;
+		bool feStarted = (feCntl & (1 << 10)) != 0;
+		bool isDP = (digMode == 0 || digMode == 5);
+		bool isHDMI = (digMode == 3);
+
+		if (digEnabled && (isDP || isHDMI) && (dpTrained || isHDMI)) {
+			FBLOG("initGPUAudio: DIG%d is ACTIVE (mode=%d %s dpTrained=%d feStart=%d)",
+			      d, digMode, isDP ? "DP" : "HDMI", dpTrained, feStarted);
+			enableGPUAudioEngine(d, d, isDP, spkAlloc, 2);
+			enabledCount++;
 		}
+	}
+
+	if (enabledCount == 0) {
+		FBLOG("initGPUAudio: no active DIG found, enabling all as fallback");
+		for (int ep = 0; ep < 6 && ep < mNumConnections; ep++)
+			enableGPUAudioEngine(ep, ep, true, spkAlloc, 2);
+	} else {
+		FBLOG("initGPUAudio: enabled audio on %d active DIG(s)", enabledCount);
 	}
 
 	FBLOG("initGPUAudio: === DUMPING GPU AZ STATE (after enable) ===");
