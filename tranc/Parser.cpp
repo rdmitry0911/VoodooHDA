@@ -2525,11 +2525,11 @@ void VoodooHDADevice::audioCommit(FunctionGroup *funcGroup)
 			/* Disable downmix */
 			sendCommand(ATI_CMD_12BIT(cad, widget->nid, ATI_VERB_SET_DOWNMIX_INFO, 0), cad);
 
-			/* Rev3+ codecs: enable single-channel remap mode for finer control */
+			/* Rev3+ codecs: keep default paired multichannel mode.
+		 * AppleGFXHDA does NOT set single-channel mode; paired mode (default)
+		 * uses verbs 0x777-0x77a with format: (base_slot << 4) | enable_bit */
 			if (isAtiHdmiRev3(funcGroup->codec)) {
-				IOLog("VoodooHDA ATI DBG: audioCommit nid=%d: rev3+, setting single-channel mode\n", widget->nid);
-				sendCommand(ATI_CMD_12BIT(cad, widget->nid, ATI_VERB_SET_MULTICHANNEL_MODE,
-										  ATI_MULTICHANNEL_MODE_SINGLE), cad);
+				IOLog("VoodooHDA ATI DBG: audioCommit nid=%d: rev3+, keeping paired multichannel mode\n", widget->nid);
 			}
 
 			logMsg("ATI HDMI init: nid=%d downmix=0 mode=%s\n", widget->nid,

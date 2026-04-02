@@ -2912,8 +2912,13 @@ void VoodooHDADevice::streamSetup(Channel *channel)
 //		logMsg("PCMDIR_%s: Stream setup nid=%d: format=0x%04x, digFormat=0x%04x\n",
 //				(channel->direction == PCMDIR_PLAY) ? "PLAY" : "REC", channel->io[i], format, digFormat);
 		sendCommand(HDA_CMD_SET_CONV_FMT(cad, channel->io[i], format), cad);
-		if (HDA_PARAM_AUDIO_WIDGET_CAP_DIGITAL(widget->params.widgetCap))
+		if (HDA_PARAM_AUDIO_WIDGET_CAP_DIGITAL(widget->params.widgetCap)) {
+			/* Send BOTH digital converter verbs matching AppleGFXHDA:
+			 * 0x70e (FMT2/IEC60958 category) FIRST, then 0x70d (FMT1/enable) */
+			UInt8 digFmt2 = (channel->format & AFMT_AC3) ? 0x19 : 0x01; /* category code */
+			sendCommand(HDA_CMD_12BIT(cad, channel->io[i], 0x70e, digFmt2), cad);
 			sendCommand(HDA_CMD_SET_DIGITAL_CONV_FMT1(cad, channel->io[i], digFormat), cad);
+		}
 		sendCommand(HDA_CMD_SET_CONV_STREAM_CHAN(cad, channel->io[i], c), cad);
 		if (!c)
 			continue;
@@ -3012,7 +3017,9 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 			IOLog("VoodooHDA HDMI: ATI verb path nid_pin=%d ca=0x%02x totalchn=%d\n",
 				  nid_pin, ca, totalchn);
 
-			/* Set multichannel slots using ATI paired-mode verbs */
+			/* Set multichannel slots using ATI paired-mode verbs.
+			 * Format (matching AppleGFXHDA): data = (base_slot << 4) | enable_bit
+			 * enable_bit = 1 if this channel pair is active, 0 if not. */
 			static const UInt16 ati_paired_verbs[4] = {
 				ATI_VERB_SET_MULTICHANNEL_01,
 				ATI_VERB_SET_MULTICHANNEL_23,
@@ -3021,28 +3028,10 @@ void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, Audi
 			};
 
 			for (int k = 0; k < 4; k++) {
-				int ch_lo = k * 2;
-				int ch_hi = k * 2 + 1;
-				int slot_lo, slot_hi;
-
-				if (ch_lo < totalchn) {
-					slot_lo = ch_lo;
-					if (slot_lo == 2) slot_lo = 3;
-					else if (slot_lo == 3) slot_lo = 2;
-				} else {
-					slot_lo = 0xf;
-				}
-
-				if (ch_hi < totalchn) {
-					slot_hi = ch_hi;
-					if (slot_hi == 2) slot_hi = 3;
-					else if (slot_hi == 3) slot_hi = 2;
-				} else {
-					slot_hi = 0xf;
-				}
-
-				UInt32 val = ((slot_lo << 4) | ch_lo) | (((slot_hi << 4) | ch_hi) << 8);
-				sendCommand(ATI_CMD_12BIT(cad, nid_pin, ati_paired_verbs[k], val & 0xff), cad);
+				int base_slot = k * 2;
+				int enable = (base_slot < totalchn) ? 1 : 0;
+				UInt32 val = (base_slot << 4) | enable;
+				sendCommand(ATI_CMD_12BIT(cad, nid_pin, ati_paired_verbs[k], val), cad);
 			}
 
 			sendCommand(ATI_CMD_12BIT(cad, nid_pin, ATI_VERB_SET_CHANNEL_ALLOCATION, ca), cad);
