@@ -194,11 +194,17 @@ const char *VoodooHDAEngine::getPortName()
 	//Slice - advanced PinName
 	{
 		const char *pinName = &widget->name[5];
-		const char *ctrlName = mDevice->mControllerName;
-		/* Prefix with controller name to distinguish identical port names
-		 * (e.g. "Intel PCH: Digital-out (HDMI)" vs "AMD VEGA: Digital-out (HDMI)") */
-		if (ctrlName) {
-			snprintf(mPortNameBuf, sizeof(mPortNameBuf), "%s: %s", ctrlName, pinName);
+		/* Use codec name (e.g. "Realtek ALC897", "Intel Raptor Lake HDMI")
+		 * instead of controller name — the controller name is the same for
+		 * all codecs on the same HDA bus, which is misleading when Realtek
+		 * analog outputs show as "Intel: Headphones". */
+		const char *codecName = NULL;
+		if (mChannel->funcGroup && mChannel->funcGroup->codec)
+			codecName = VoodooHDADevice::findCodecName(mChannel->funcGroup->codec);
+		if (!codecName)
+			codecName = mDevice->mControllerName;
+		if (codecName) {
+			snprintf(mPortNameBuf, sizeof(mPortNameBuf), "%s: %s", codecName, pinName);
 			mPortName = mPortNameBuf;
 		} else {
 			mPortName = pinName;
