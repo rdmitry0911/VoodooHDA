@@ -3388,7 +3388,15 @@ int VoodooHDADevice::pcmAttach(PcmDevice *pcmDevice)
 	dumpMsg("pcmAttach: %s\n", buf);
 
 	pcmDevice->chanSize = HDA_BUFSZ_DEFAULT;
-	pcmDevice->chanNumBlocks = HDA_BDL_DEFAULT;
+	/* GPU HDA controllers (ATI/AMD, NVidia) share the memory bus with
+	 * graphics.  Large BDL entries (128KB with only 2 entries) force long
+	 * DMA bursts that get starved by the GPU → FIFO underrun → distortion.
+	 * AppleGFXHDA uses 4KB per BDL entry.  Use many small entries for
+	 * digital outputs and keep the default for analog (Intel PCH). */
+	if (pcmDevice->digital)
+		pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN; /* 4KB per entry */
+	else
+		pcmDevice->chanNumBlocks = HDA_BDL_DEFAULT;
 
 	dumpMsg("+--------------------------------------+\n");
 	dumpMsg("| DUMPING PCM Playback/Record Channels |\n");

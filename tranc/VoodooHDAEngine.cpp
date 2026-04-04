@@ -559,6 +559,16 @@ bool VoodooHDAEngine::createAudioStream(IOAudioStreamDirection direction, void *
 		format.fBitWidth = 32;
             formatEx.fBytesPerPacket = format.fNumChannels * (format.fBitWidth / 8);
             mStream->addAvailableFormat(&format, &formatEx, &sampleRate, &sampleRate);
+	} else if (isDigital) {
+		/* HDMI/DP codecs are pass-through: the HDA PCM cap register may
+		 * report only 16-bit, but the HDMI link carries 24-bit fine.
+		 * AppleGFXHDA uses 24-bit on the same hardware. */
+		IOAudioStreamFormat fmt24 = format;
+		IOAudioStreamFormatExtension fmtEx24 = formatEx;
+		fmt24.fBitDepth = 24;
+		fmt24.fBitWidth = 32;
+		fmtEx24.fBytesPerPacket = fmt24.fNumChannels * (fmt24.fBitWidth / 8);
+		mStream->addAvailableFormat(&fmt24, &fmtEx24, &sampleRate, &sampleRate);
 	} else if (HDA_PARAM_SUPP_PCM_SIZE_RATE_20BIT(supPcmSizeRates)) {
 		format.fBitDepth = 20;
 		format.fBitWidth = 32;
