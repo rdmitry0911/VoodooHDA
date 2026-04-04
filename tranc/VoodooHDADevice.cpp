@@ -1150,6 +1150,9 @@ bool VoodooHDADevice::getCapabilities()
 	mOutStreamsSup = HDAC_GCAP_OSS(globalCap);
 	mBiStreamsSup = HDAC_GCAP_BSS(globalCap);
 	mSDO = HDAC_GCAP_NSDO(globalCap);
+	IOLog("VoodooHDA DBG: GCAP=0x%04x ISS=%d OSS=%d BSS=%d NSDO=%d 64bit=%d\n",
+		  globalCap, mInStreamsSup, mOutStreamsSup, mBiStreamsSup, mSDO,
+		  (int)HDA_FLAG_MATCH(globalCap, HDAC_GCAP_64OK));
 
 	mSupports64Bit = HDA_FLAG_MATCH(globalCap, HDAC_GCAP_64OK);
 	if ((mDeviceId & ~0x30000U) == HDA_NVIDIA_MCP78_1)	// Quirk from HDAC
@@ -2903,7 +2906,14 @@ void VoodooHDADevice::streamSetup(Channel *channel)
 	
 	writeData16(channel->off + HDAC_SDFMT, format);
     
-	channel->stripectl = calculateStripectl(static_cast<UInt8>(mSDO), channel->stripecap, format);
+	/* AppleGFXHDA never uses stripe mode for HDMI audio.  Stripe causes
+	 * FIFO errors (SDSTS_FIFOE) on AMD/ATI GPU HDA controllers, producing
+	 * distorted / crackling audio.  Disable stripe for digital (HDMI/DP)
+	 * outputs; keep it only for analog multi-channel on Intel PCH. */
+	if (assoc->digital)
+		channel->stripectl = 0;
+	else
+		channel->stripectl = calculateStripectl(static_cast<UInt8>(mSDO), channel->stripecap, format);
 
 	for (int i = 0, chn = 0; channel->io[i] != -1; i++) {
 		Widget *widget;
