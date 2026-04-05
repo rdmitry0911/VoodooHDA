@@ -3397,6 +3397,9 @@ int VoodooHDADevice::pcmAttach(PcmDevice *pcmDevice)
 		pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN; /* 4KB per entry */
 	else
 		pcmDevice->chanNumBlocks = HDA_BDL_DEFAULT;
+	IOLog("VoodooHDA DBG: pcmAttach %s chanSize=%d chanNumBlocks=%d blockSize=%d digital=%d\n",
+		  buf, pcmDevice->chanSize, pcmDevice->chanNumBlocks,
+		  pcmDevice->chanSize / pcmDevice->chanNumBlocks, pcmDevice->digital);
 
 	dumpMsg("+--------------------------------------+\n");
 	dumpMsg("| DUMPING PCM Playback/Record Channels |\n");
