@@ -40,16 +40,18 @@
 			<string>IOPCIDevice</string>
 			<key>IOUserClientClass</key>
 			<string>VoodooHDAUserClient</string>
-			<key>LayoutId</key>
-			<integer>80</integer>
 			<key>InhibitCache</key>
 			<false/>
+			<key>LayoutId</key>
+			<integer>80</integer>
 			<key>MixerValues</key>
 			<dict>
+				<key>Monitor</key>
+				<integer>0</integer>
 				<key>PCM</key>
 				<integer>95</integer>
 				<key>Rec</key>
-				<integer>95</integer>
+				<integer>38</integer>
 				<key>iGain</key>
 				<integer>95</integer>
 				<key>iMix</key>

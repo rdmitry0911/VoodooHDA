@@ -459,11 +459,11 @@ NSString* trimIORegistryPathForDisplay(NSString* path)
 	}
 
 	for (; i < N; i++){
-		//	if (sizeof(chInfo[i].name)) {
-		[selector addItemWithTitle:[NSString stringWithFormat:@"%d: %s", i+1, info[i].name]];
-		//	} else {
-		//		[selector addItemWithTitle:[NSString stringWithFormat:@"%d: Empty", i+1]];
-		//	}
+		NSString *suffix = @"";
+		if      (info[i].digital == 2) suffix = @" [HDMI]";
+		else if (info[i].digital == 3) suffix = @" [DP]";
+		else if (info[i].digital == 1) suffix = @" [Digital]";
+		[selector addItemWithTitle:[NSString stringWithFormat:@"%d: %s%@", i+1, info[i].name, suffix]];
 	}
 	[selector selectItemAtIndex:currentChannel];
 	return true;

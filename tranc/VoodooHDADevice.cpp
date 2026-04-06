@@ -2617,9 +2617,12 @@ void VoodooHDADevice::mixerSetDefaults(PcmDevice *pcmDevice)
 		uint32_t def = mMixerDefaults[n];
 		if (def > 100)
 			def = 100;
+		// For HDMI/DP: start at unity gain — no hardware attenuation needed
+		if (pcmDevice->digital >= 2 && (n == SOUND_MIXER_PCM || n == SOUND_MIXER_VOLUME))
+			def = 100;
 		audioCtlOssMixerSet(pcmDevice, n, def, def);
 	}
-//Slice - attention!	
+//Slice - attention!
 //	if (audioCtlOssMixerSetRecSrc(pcmDevice, SOUND_MASK_INPUT) == 0)
 		//errorMsg("warning: couldn't set recording source to input\n");
 		return;
@@ -3492,6 +3495,7 @@ void VoodooHDADevice::createPrefPanelMemoryBuf(FunctionGroup *funcGroup)
 		mPrefPanelMemoryBuf[i].noiseLevel = noiseLevel;
 		mPrefPanelMemoryBuf[i].useStereo = useStereo;
 		mPrefPanelMemoryBuf[i].StereoBase = StereoBase;
+		mPrefPanelMemoryBuf[i].digital = sliderTabs[i].pcmDevice ? sliderTabs[i].pcmDevice->digital : 0;
 	}
 }
 
@@ -3545,9 +3549,13 @@ void VoodooHDADevice::createPrefPanelStruct(FunctionGroup *funcGroup)
 		}
 		//logMsg("createPrefPanelStruct:         ossdev %s, pcmDev = %d\n", audioCtlMixerMaskToString(ossmask, buf, sizeof(buf)), pcmDeviceNum);
 		
-		if(ossmask & SOUND_MASK_PCM)
+		if (pcmDevice && pcmDevice->digital >= 2) {
+			// HDMI/DP: no hardware amp controls — expose PCM slider only (for soft volume)
+			ossmask = SOUND_MASK_PCM;
+		} else if (ossmask & SOUND_MASK_PCM) {
 			ossmask |= SOUND_MASK_IMIX;
-		
+		}
+
 		sliderTabs[nSliderTabsCount].pcmDevice = pcmDevice;
 		//Создаем регуляторы на текущей вкладке
 		for(int j = 0; j < 32; j++) {

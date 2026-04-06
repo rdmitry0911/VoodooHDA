@@ -3819,6 +3819,14 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
         floatMixBuf2[i] *= Boost;
       }
     }
+    // Soft PCM volume for HDMI/DP (no hardware amp controls in digital codecs)
+    if (mChannel && mChannel->pcmDevice && mChannel->pcmDevice->digital >= 2) {
+      float vol = mChannel->pcmDevice->left[SOUND_MIXER_PCM] / 100.0f;
+      if (vol < 0.999f) {
+        for (int i = firstSample; i < lastSample; i++)
+          floatMixBuf2[i] *= vol;
+      }
+    }
 //    floatMixBufOld = floatMixBuf2 + numSamples - base * 2;
 
 		

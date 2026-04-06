@@ -74,7 +74,8 @@ typedef struct _ChannelInfo {
 	bool useStereo;
     UInt8 noiseLevel;
 	UInt8 StereoBase;
-	UInt8 empty[3]; //align to 8 bytes
+	UInt8 digital;   // PcmDevice digital type: 0=analog, 1=S/PDIF, 2=HDMI, 3=DisplayPort
+	UInt8 empty[2];  // alignment
 } ChannelInfo;
 
 #endif
