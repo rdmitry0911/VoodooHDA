@@ -358,6 +358,7 @@ void VoodooHDAFramebufferNotifier::handleFramebufferTerminated(IOService *fb)
 			conn->fbNotifier->remove();
 			conn->fbNotifier = NULL;
 		}
+		disableAudioPipe(conn);
 		clearWidgetELD(conn);
 		if (conn->edidData) { IOFree(conn->edidData, conn->edidLen); conn->edidData = NULL; }
 		if (conn->eld) { IOFree(conn->eld, conn->eldLen); conn->eld = NULL; }
@@ -639,7 +640,31 @@ void VoodooHDAFramebufferNotifier::retryEnableAudioPipeAll()
 
 void VoodooHDAFramebufferNotifier::disableAudioPipe(FBConnectionState *conn)
 {
+	if (!conn->audioPipeEnabled || !conn->framebuffer)
+		return;
+	IOFramebuffer *fb = reinterpret_cast<IOFramebuffer *>(conn->framebuffer);
+	IOReturn ret = fb->setAttributeForConnectionExt(0, kConnectionEnableAudio, 0);
+	FBLOG("disableAudioPipe: pin=%d setAttributeForConnectionExt(kConnectionEnableAudio=0)=%x",
+	      conn->mappedPinNid, ret);
+	(void)ret;
 	conn->audioPipeEnabled = false;
+}
+
+/* Called from updateHDMIEnginePresence() when a pin loses presence (cable removed).
+ * Tells the GPU it can stop the audio pipe for that output → allows GPU power gating. */
+void VoodooHDAFramebufferNotifier::disableAudioPipeForPin(int cad, nid_t pinNid)
+{
+	IOLockLock(mLock);
+	for (int i = 0; i < mNumConnections; i++) {
+		FBConnectionState *conn = &mConnections[i];
+		if (conn->mappedCodecCad == cad && conn->mappedPinNid == pinNid) {
+			disableAudioPipe(conn);
+			/* Reset EDID validity so it will be re-read when the monitor reconnects. */
+			conn->edidValid = false;
+			break;
+		}
+	}
+	IOLockUnlock(mLock);
 }
 
 /* ---------- ELD injection into VoodooHDA widget ---------- */

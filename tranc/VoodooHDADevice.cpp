@@ -2126,6 +2126,11 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 		if (hasPresence && mFBNotifier)
 			mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
 
+		/* When cable is removed, tell the GPU to stop the audio pipe so it
+		 * can power-gate the display engine and reduce power consumption. */
+		if (!hasPresence && mFBNotifier)
+			mFBNotifier->disableAudioPipeForPin(slot->cad, slot->pinNid);
+
 		/* Update engine description.  If multiple pins report presence
 		 * (stale ATI pin sense), only the most recently detected one
 		 * is shown as "connected" — the rest get "no display". */
