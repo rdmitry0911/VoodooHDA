@@ -2090,12 +2090,6 @@ int VoodooHDADevice::unsolqFlush()
  */
 void VoodooHDADevice::updateHDMIEnginePresence()
 {
-	/* Retry enableAudioPipe on framebuffers that returned timeout at
-	 * handleFBMatched time.  By the time unsolicited responses arrive,
-	 * all framebuffers should be fully initialized. */
-	if (mFBNotifier)
-		mFBNotifier->retryEnableAudioPipeAll();
-
 	/* First pass: read pin sense for all engines and find which have presence.
 	 * ATI codecs may report stale presence on previously-connected pins,
 	 * so count total presence to detect the "cable moved" scenario. */
@@ -2229,15 +2223,16 @@ int VoodooHDADevice::handleStreamInterrupt(Channel *channel)
 	/* XXX to be removed */
 	res = readData8(channel->off + HDAC_SDSTS);
 
-	/* XXX to be removed */
 	if (res & (HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE))
-		errorMsg("PCMDIR_%s intr triggered beyond stream boundary: %08lx\n",
+		errorMsg("PCMDIR_%s FIFO/Desc error SDSTS=0x%02lx\n",
 				(channel->direction == PCMDIR_PLAY) ? "PLAY" : "REC", (long unsigned int)res);
 
 	writeData8(channel->off + HDAC_SDSTS, HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE | HDAC_SDSTS_BCIS);
 
-	/* XXX to be removed */
-	if (res & HDAC_SDSTS_BCIS)
+	/* Treat FIFOE/DESE as soft completion so takeTimeStamp() stays synchronised.
+	 * Without this, position tracking in IOAudioEngine drifts and produces
+	 * crackling on controllers that spuriously assert FIFOE (e.g. Raptor Lake). */
+	if (res & (HDAC_SDSTS_BCIS | HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE))
 		return 1;
 
 	return 0;

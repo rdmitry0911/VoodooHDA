@@ -43,7 +43,10 @@
 
 #define HDA_BDL_MIN				2
 #define HDA_BDL_MAX				256
-#define HDA_BDL_DEFAULT			HDA_BDL_MIN
+/* 16 blocks of 16 KB → interrupt every ~85ms at 48kHz/2ch/16bit.
+ * Smaller periods reduce FIFO underrun risk on modern Intel PCH (Alder/Raptor Lake)
+ * compared to the old HDA_BDL_MIN=2 (128KB blocks, interrupt every ~1.37s). */
+#define HDA_BDL_DEFAULT			16
 
 #define HDA_BLK_MIN				HDAC_DMA_ALIGNMENT
 #define HDA_BLK_ALIGN			(~(HDA_BLK_MIN - 1))
