@@ -867,13 +867,20 @@ void VoodooHDAFramebufferNotifier::ensureAudioPipeEnabled(int cad, nid_t pinNid)
 	for (int i = 0; i < mNumConnections; i++) {
 		FBConnectionState *conn = &mConnections[i];
 		if (conn->mappedCodecCad == cad && conn->mappedPinNid == pinNid) {
-			if (!conn->edidValid && conn->framebuffer) {
+			if (!conn->framebuffer) break;
+			if (!conn->edidValid) {
+				/* No EDID yet — GPU may be awake now, try again */
 				if (readEDID(conn) && parseEDIDAudio(conn)) {
 					buildELDFromEDID(conn);
 					conn->edidValid = true;
 					enableAudioPipe(conn);
 					injectELDIntoWidget(conn);
 				}
+			} else if (!conn->audioPipeEnabled) {
+				/* EDID is valid but pipe was disabled (e.g., by power-gating logic
+				 * that incorrectly reads ATI presence=0 as disconnected).
+				 * Re-enable it now that audio is about to stream. */
+				enableAudioPipe(conn);
 			}
 			break;
 		}

@@ -2094,14 +2094,15 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 	 * ATI codecs may report stale presence on previously-connected pins,
 	 * so count total presence to detect the "cable moved" scenario. */
 	bool presence[16] = {};
+	UInt32 pinSenses[16] = {};
 	int presenceCount = 0;
 	int lastPresenceIdx = -1;
 
 	for (int i = 0; i < mNumHDMIEngines; i++) {
 		HDMIEngineSlot *slot = &mHDMIEngines[i];
 		if (!slot->engine) continue;
-		UInt32 pinSense = sendCommand(HDA_CMD_GET_PIN_SENSE(slot->cad, slot->pinNid), slot->cad);
-		presence[i] = (pinSense & (1U << 31)) != 0;
+		pinSenses[i] = sendCommand(HDA_CMD_GET_PIN_SENSE(slot->cad, slot->pinNid), slot->cad);
+		presence[i] = (pinSenses[i] & (1U << 31)) != 0;
 		if (presence[i]) {
 			presenceCount++;
 			lastPresenceIdx = i;
@@ -2127,9 +2128,23 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 			mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
 
 		/* When cable is removed, tell the GPU to stop the audio pipe so it
-		 * can power-gate the display engine and reduce power consumption. */
-		if (!hasPresence && mFBNotifier)
-			mFBNotifier->disableAudioPipeForPin(slot->cad, slot->pinNid);
+		 * can power-gate the display engine and reduce power consumption.
+		 * ATI HDMI codecs always report presence=0 (bit 31) even when a display
+		 * is connected — they set ELD_VALID (bit 1) instead.  Only disable the
+		 * audio pipe for ATI when ELD_VALID is also 0, meaning truly disconnected. */
+		if (!hasPresence && mFBNotifier) {
+			bool disablePipe = true;
+			Codec *codec = mCodecs[slot->cad];
+			if (codec && isAtiHdmiCodec(codec)) {
+				/* ATI: ELD_VALID=1 means display is present despite presence=0 */
+				bool eldValid = (pinSenses[i] & (1U << 1)) != 0;
+				disablePipe = !eldValid;
+				IOLog("VoodooHDA ATI DBG: updatePresence pin=%d pinSense=0x%08x ELD_VALID=%d disablePipe=%d\n",
+				      slot->pinNid, (unsigned)pinSenses[i], eldValid, disablePipe);
+			}
+			if (disablePipe)
+				mFBNotifier->disableAudioPipeForPin(slot->cad, slot->pinNid);
+		}
 
 		/* Update engine description.  If multiple pins report presence
 		 * (stale ATI pin sense), only the most recently detected one
