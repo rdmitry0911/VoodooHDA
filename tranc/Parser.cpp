@@ -4931,11 +4931,17 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
       (HDA_CONFIG_DEFAULTCONF_MISC(widget->pin.config) & 1) != 0)
     return;
 
-  /* Check framebuffer-sourced ELD first (ATI codecs on macOS) */
+  /* Check framebuffer-sourced ELD first (ATI codecs on macOS).
+   * The FB connector index→pin mapping is linear and may not match the physical
+   * routing (e.g. FB connIndex=0 → nid=3 but display is on nid=7).  Try exact
+   * pin match first; fall back to ANY connection with ELD for ATI codecs. */
   if (mFBNotifier) {
     uint8_t *fbELD = NULL;
     int fbELDLen = 0;
-    if (mFBNotifier->getFramebufferELD(cad, nid, &fbELD, &fbELDLen) && fbELDLen > 0) {
+    bool found = mFBNotifier->getFramebufferELD(cad, nid, &fbELD, &fbELDLen);
+    if (!found && isAtiHdmiCodec(widget->funcGroup->codec))
+      found = mFBNotifier->getAnyFramebufferELD(&fbELD, &fbELDLen);
+    if (found && fbELDLen > 0) {
       if (widget->eld) { freeMem(widget->eld); widget->eld = NULL; widget->eld_len = 0; }
       widget->eld = (uint8_t *)allocMem(fbELDLen);
       if (widget->eld) {

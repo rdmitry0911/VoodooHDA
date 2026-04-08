@@ -58,6 +58,8 @@ public:
 
 	/* Query framebuffer ELD for a given pin */
 	bool getFramebufferELD(int cad, nid_t pinNid, uint8_t **outELD, int *outLen);
+	/* Fallback: returns ELD from any connection with valid EDID (for ATI pin mismatch) */
+	bool getAnyFramebufferELD(uint8_t **outELD, int *outLen);
 
 	/* Ensure audio pipe is active for a pin (called at stream start) */
 	void ensureAudioPipeEnabled(int cad, nid_t pinNid);

@@ -659,8 +659,11 @@ void VoodooHDAFramebufferNotifier::disableAudioPipeForPin(int cad, nid_t pinNid)
 		FBConnectionState *conn = &mConnections[i];
 		if (conn->mappedCodecCad == cad && conn->mappedPinNid == pinNid) {
 			disableAudioPipe(conn);
-			/* Reset EDID validity so it will be re-read when the monitor reconnects. */
-			conn->edidValid = false;
+			/* Do NOT reset edidValid here: the EDID/ELD data must remain available
+			 * so that injectELDIntoPinIfReady() can still serve other pins (e.g.
+			 * the FB connector maps to nid=3 but the display is on nid=7).
+			 * edidValid is cleared only when the display truly disconnects
+			 * (handleFramebufferTerminated / kIOMessageServiceIsTerminated). */
 			break;
 		}
 	}
@@ -823,6 +826,22 @@ void VoodooHDAFramebufferNotifier::notifyStreamingState(int cad, nid_t pinNid, b
 }
 
 /* ---------- public query interface ---------- */
+
+bool VoodooHDAFramebufferNotifier::getAnyFramebufferELD(uint8_t **outELD, int *outLen)
+{
+	IOLockLock(mLock);
+	for (int i = 0; i < mNumConnections; i++) {
+		FBConnectionState *conn = &mConnections[i];
+		if (conn->eld && conn->eldLen > 0) {
+			*outELD = conn->eld;
+			*outLen = conn->eldLen;
+			IOLockUnlock(mLock);
+			return true;
+		}
+	}
+	IOLockUnlock(mLock);
+	return false;
+}
 
 bool VoodooHDAFramebufferNotifier::getFramebufferELD(
 	int cad, nid_t pinNid, uint8_t **outELD, int *outLen)
