@@ -24,8 +24,22 @@ OSDefineMetaClassAndStructors(VoodooHDAEngine, IOAudioEngine)
 
 #define SAMPLE_CHANNELS		2	// forced stereo quirk is always enabled
 
-#define SAMPLE_OFFSET		64	// note: these values definitely need to be tweaked
-#define SAMPLE_LATENCY		32
+/* Output sample offset: how many frames ahead of the DMA position IOAudioEngine
+ * will write new mix data.  setSampleOffset() is the old combined API — it does NOT
+ * call setOutputSampleOffset() internally (confirmed from IOAudioFamily decompile:
+ * setSampleOffset writes field+0x104 / setProperty, while setOutputSampleOffset
+ * calls vtable+0xb78 which updates the output stream object).  We must call both
+ * separately.
+ *
+ * HDMI/DP: blockSize = 4096 bytes; at 48kHz stereo 16-bit that is 1024 frames/block.
+ * The HDMI codec FIFO + encoder pipeline requires a safety margin much larger than
+ * the 64-frame analog value.  Apple computes this dynamically per sample-rate and
+ * path (getOutputSafetyOffset); we use a conservative fixed value that covers
+ * typical HDMI pipeline depth across AMD/Intel controllers (~10 ms at 48 kHz). */
+#define SAMPLE_OFFSET		  64	// analog output safety offset (frames)
+#define SAMPLE_LATENCY		  32	// analog latency (frames)
+#define HDMI_SAMPLE_OFFSET	 512	// HDMI/DP output offset — half a BDL block (~10 ms at 48 kHz)
+#define HDMI_SAMPLE_LATENCY	 128	// HDMI/DP latency — deeper codec pipeline
 
 //extern const char * const gDeviceTypes[], * const gConnTypes[];
 
@@ -369,9 +383,20 @@ bool VoodooHDAEngine::initHardware(IOService *provider)
 	logMsg("setDesc portName = %s\n", mPortName);
 	setDescription(mPortName);
 
-	setSampleOffset(SAMPLE_OFFSET);
-	setInputSampleOffset(SAMPLE_OFFSET);
-	setSampleLatency(SAMPLE_LATENCY);
+	/* Choose offset/latency based on channel type.  Digital (HDMI/DP) paths
+	 * have larger codec FIFOs and encoder pipeline depth than analog.
+	 * Wrapped in a block so the declarations don't cross the goto above. */
+	{
+		bool isDigitalChan = (mChannel->funcGroup->audio.assocs[mChannel->assocNum].digital != 0);
+		UInt32 outOffset = isDigitalChan ? HDMI_SAMPLE_OFFSET : SAMPLE_OFFSET;
+		UInt32 latency   = isDigitalChan ? HDMI_SAMPLE_LATENCY : SAMPLE_LATENCY;
+
+		setSampleOffset(outOffset);           // legacy field+0x104 — keep for compat
+		setOutputSampleOffset(outOffset);     // vtable+0xb78 — actual output stream offset
+		setInputSampleOffset(SAMPLE_OFFSET);  // input always analog-style
+		setSampleLatency(latency);
+		setOutputSampleLatency(latency);      // separate output latency (IOAudioStream)
+	}
 	if (version_major > 10)			/* newer than SnowLeopard */
  	  setClockIsStable(true);
 	else
