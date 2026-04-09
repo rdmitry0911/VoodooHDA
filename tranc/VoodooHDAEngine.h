@@ -81,6 +81,8 @@ public:
 
 	virtual UInt32 getCurrentSampleFrame() override;
 
+	void recalculateSampleOffsets(UInt32 sampleRate);
+
 	virtual IOReturn performFormatChange(IOAudioStream *audioStream, const IOAudioStreamFormat *newFormat,
 			const IOAudioSampleRate *newSampleRate) override;
 

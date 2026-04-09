@@ -24,22 +24,24 @@ OSDefineMetaClassAndStructors(VoodooHDAEngine, IOAudioEngine)
 
 #define SAMPLE_CHANNELS		2	// forced stereo quirk is always enabled
 
-/* Output sample offset: how many frames ahead of the DMA position IOAudioEngine
- * will write new mix data.  setSampleOffset() is the old combined API — it does NOT
- * call setOutputSampleOffset() internally (confirmed from IOAudioFamily decompile:
- * setSampleOffset writes field+0x104 / setProperty, while setOutputSampleOffset
- * calls vtable+0xb78 which updates the output stream object).  We must call both
- * separately.
+/* Sample offset / latency: mirroring Apple's AppleGFXHDAEngine::recalculateEnginesSampleOffset()
+ * which calls getOutputSafetyOffset(sampleRate) on every format change.
  *
- * HDMI/DP: blockSize = 4096 bytes; at 48kHz stereo 16-bit that is 1024 frames/block.
- * The HDMI codec FIFO + encoder pipeline requires a safety margin much larger than
- * the 64-frame analog value.  Apple computes this dynamically per sample-rate and
- * path (getOutputSafetyOffset); we use a conservative fixed value that covers
- * typical HDMI pipeline depth across AMD/Intel controllers (~10 ms at 48 kHz). */
-#define SAMPLE_OFFSET		  64	// analog output safety offset (frames)
-#define SAMPLE_LATENCY		  32	// analog latency (frames)
-#define HDMI_SAMPLE_OFFSET	 512	// HDMI/DP output offset — half a BDL block (~10 ms at 48 kHz)
-#define HDMI_SAMPLE_LATENCY	 128	// HDMI/DP latency — deeper codec pipeline
+ * Formula (from AppleGFXHDADriver decompile):
+ *   offset = roundup(sampleRate * safetyCoeff_μs / 1_000_000) + base_frames
+ *
+ * setSampleOffset() (deprecated) does NOT call setOutputSampleOffset() internally —
+ * confirmed from IOAudioFamily decompile: setSampleOffset writes field+0x104 /
+ * setProperty while setOutputSampleOffset calls vtable+0xb78 which updates the
+ * output IOAudioStream object.  We call them explicitly and recalculate on each
+ * performFormatChange() as Apple does.
+ *
+ * Analog coefficients produce the legacy values at 48 kHz (≈64 / 32 frames). */
+#define ANALOG_SAFETY_US	1333	// → 64 frames at 48 kHz
+#define ANALOG_LATENCY_US	 667	// → 32 frames at 48 kHz
+#define HDMI_SAFETY_US		5000	// → 240 + 64 = 304 frames at 48 kHz (~5 ms + FIFO base)
+#define HDMI_LATENCY_US		2000	// → 96 frames at 48 kHz (~2 ms)
+#define HDMI_FIFO_BASE		  64	// base frames: covers controller FIFO minimum
 
 //extern const char * const gDeviceTypes[], * const gConnTypes[];
 
@@ -383,20 +385,8 @@ bool VoodooHDAEngine::initHardware(IOService *provider)
 	logMsg("setDesc portName = %s\n", mPortName);
 	setDescription(mPortName);
 
-	/* Choose offset/latency based on channel type.  Digital (HDMI/DP) paths
-	 * have larger codec FIFOs and encoder pipeline depth than analog.
-	 * Wrapped in a block so the declarations don't cross the goto above. */
-	{
-		bool isDigitalChan = (mChannel->funcGroup->audio.assocs[mChannel->assocNum].digital != 0);
-		UInt32 outOffset = isDigitalChan ? HDMI_SAMPLE_OFFSET : SAMPLE_OFFSET;
-		UInt32 latency   = isDigitalChan ? HDMI_SAMPLE_LATENCY : SAMPLE_LATENCY;
-
-		setSampleOffset(outOffset);           // legacy field+0x104 — keep for compat
-		setOutputSampleOffset(outOffset);     // vtable+0xb78 — actual output stream offset
-		setInputSampleOffset(SAMPLE_OFFSET);  // input always analog-style
-		setSampleLatency(latency);
-		setOutputSampleLatency(latency);      // separate output latency (IOAudioStream)
-	}
+	/* Initial offsets at 48 kHz default; recalculated on every performFormatChange(). */
+	recalculateSampleOffsets(48000);
 	if (version_major > 10)			/* newer than SnowLeopard */
  	  setClockIsStable(true);
 	else
@@ -777,6 +767,35 @@ IOReturn VoodooHDAEngine::performAudioEngineStop()
 	return kIOReturnSuccess;
 }
 	
+/* Mirror of Apple's AppleGFXHDAEngine::recalculateEnginesSampleOffset/Latency().
+ * Called from initHardware() with a default rate, then again on every
+ * performFormatChange() so the offsets scale with the actual sample rate.
+ *
+ * Formula: offset = roundup(rate * safetyCoeff_μs / 1_000_000) + base
+ * Input offset is always analog-style (no large FIFO on the capture side). */
+void VoodooHDAEngine::recalculateSampleOffsets(UInt32 sampleRate)
+{
+	bool isDigital = (mChannel->funcGroup->audio.assocs[mChannel->assocNum].digital != 0);
+
+	UInt32 safetyUs  = isDigital ? HDMI_SAFETY_US  : ANALOG_SAFETY_US;
+	UInt32 latencyUs = isDigital ? HDMI_LATENCY_US : ANALOG_LATENCY_US;
+	UInt32 base      = isDigital ? HDMI_FIFO_BASE  : 0;
+
+	UInt32 outOffset = (sampleRate * safetyUs  + 999999) / 1000000 + base;
+	UInt32 latency   = (sampleRate * latencyUs + 999999) / 1000000;
+	UInt32 inOffset  = (sampleRate * ANALOG_SAFETY_US + 999999) / 1000000;
+
+	setSampleOffset(outOffset);        // legacy compat (field+0x104)
+	setOutputSampleOffset(outOffset);  // vtable+0xb78 — output IOAudioStream
+	setInputSampleOffset(inOffset);
+	setSampleLatency(latency);
+	setOutputSampleLatency(latency);
+
+	logMsg("recalculateSampleOffsets: rate=%u %s outOffset=%u inOffset=%u latency=%u\n",
+	       (unsigned)sampleRate, isDigital ? "HDMI/DP" : "Analog",
+	       (unsigned)outOffset, (unsigned)inOffset, (unsigned)latency);
+}
+
 UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 {
 	return (mDevice->channelGetPosition(mChannel) / mSampleSize);
@@ -902,6 +921,9 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			errorMsg("error: couldn't set sample rate %ld\n", (long int)newSampleRate->whole);
 			goto done;
 		}
+		/* Recalculate sample offsets for the new rate, as Apple does in
+		 * recalculateEnginesSampleOffset() / recalculateEnginesSampleLatency(). */
+		recalculateSampleOffsets(newSampleRate->whole);
 	}
 
 	result = kIOReturnSuccess;
