@@ -1,0 +1,103 @@
+class: AppleGFXHDAEngineOutputDP
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: DisplayPort/HDMI-oriented output engine subclass integrating framebuffer notifications, MCCS volume/mute, sink verification, and DP-specific wake/sleep behavior.
+method_inventory:
+  total_methods: 44
+  lifecycle:
+  - free()
+  power:
+  - performWakeNotifications()
+  - setPowerStateToActive(unsigned int)
+  - setPowerStateToIdle()
+  - sleepFrameBuffer()
+  - setPowerStateToSleep()
+  stream_dma_format:
+  - publishIOAudioEngineOutputChannelLayout(unsigned int, unsigned int)
+  - setVideoFormatChangeTimer(unsigned int)
+  - cancelVideoFormatChangeTimer()
+  - initAudioStream()
+  - getNumChannelsForChannelLayout()
+  controls:
+  - createAudioControls()
+  - intialiseMCCSControls()
+  - createVolumeAndMuteControlsForActivePathSet(unsigned int)
+  - createVolumeControlForActivePathSet(unsigned int, unsigned int)
+  - createMuteControlForActivePathSet(unsigned int, unsigned int)
+  - mccsSetCurrentSpeakerVolume(unsigned int, unsigned char)
+  - mccsSetCurrentSpeakerMute(unsigned int, bool)
+  - flushVolumeToPublishedAndNonPublishedControls()
+  - flushMuteToPublishedAndNonPublishedControls()
+  - mccsControlChangeHandlerAction()
+  - mccsControlChangeHandler()
+  - protectedRemoveMCCSTimer()
+  events_interrupts:
+  - handleFBNotification(unsigned int)
+  topology_codec_graph: []
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDAEngineOutputDP()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDAEngineOutputDP()
+  - getDeviceSpecificID()
+  - getGlobalUniqueID(bool)
+  - setIndex(unsigned int)
+  - stopAudioEngine()
+  - getHdmiDpContext()
+  - verifySinkDeviceAttached()
+  - runSoftwarePolledTask()
+  - enableAudioOutput(bool)
+  - getEngineDescription() const
+  - resetStatusBuffer()
+  - getGFXMuxSwitchHeadAssociations() const
+  - getDisplayPortFramebuffer()
+  - adjustEngineForClientType(unsigned int, unsigned int)
+  - getSelectedIODisplay()
+state_machine:
+  states:
+  - allocated
+  - stream_initialized
+  - sink_verification_pending
+  - active
+  - video_format_change_pending
+  - mccs_monitoring
+  - idle
+  - sleep
+  - stopping
+  - freed
+  entrypoints:
+  - initAudioStream()
+  - createAudioControls()
+  - handleFBNotification(unsigned int)
+  - verifySinkDeviceAttached()
+  - setPowerStateToActive(unsigned int)
+  - setPowerStateToIdle()
+  - setPowerStateToSleep()
+  - stopAudioEngine()
+  - free()
+  transitions:
+  - framebuffer notifications may arm/cancel video-format change timer
+  - invalid sink / mux changes can lead back to driver deactivation path
+  - active path may publish MCCS-backed volume/mute instead of plain HDA controls
+callgraph_focus:
+  upstream_dependencies:
+  - AppleGFXHDADriver
+  - AppleGFXHDAController
+  - AppleGFXHDAPathSet topology
+  downstream_targets:
+  - IOGFXHDAStream
+  - HAL plug-in
+  - IOAudioControl publication
+  key_observable_fields_or_concepts:
+  - MCCS
+  - PathSet
+  - power
+  - stream
+  - framebuffer
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

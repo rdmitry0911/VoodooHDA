@@ -1,0 +1,67 @@
+module: AppleGFXHDAHALPlugIn (global + per-device userspace side)
+role: CoreAudio HAL plugin that mirrors kernel IOAudioControl/device state into userspace
+confidence: mostly_confirmed
+exported_entrypoints:
+- _AudioDriverPlugInOpen
+- _AudioDriverPlugInClose
+- _AudioDriverPlugInDeviceGetPropertyInfo
+- _AudioDriverPlugInDeviceGetProperty
+- _AudioDriverPlugInDeviceSetProperty
+- _AudioDriverPlugInStreamGetPropertyInfo
+- _AudioDriverPlugInStreamGetProperty
+- _AudioDriverPlugInStreamSetProperty
+globals:
+  DAT_00005148: vector/list of per-device plugin descriptors
+  DAT_00005000: mutex for global per-device registry
+  DAT_00005158: shared notification manager / receiver
+  DAT_000050c0: mutex for shared notification manager
+per_device_structure_inference:
+  offset_0x00_0x1f: device identifier tuple copied from open parameters
+  offset_0x20: backend object / device runtime object
+  refcount_near_+0x18_or_+0x30_region: manual retain/release semantics via FUN_00002992
+fsm:
+  states:
+  - registry_empty
+  - lookup
+  - existing_instance_reused
+  - new_descriptor_allocated
+  - backend_runtime_allocated
+  - global_notification_manager_ensured
+  - instance_registered
+  - open
+  - closing
+  - destroyed
+  transitions:
+  - from: registry_empty
+    to: lookup
+    trigger: _AudioDriverPlugInOpen / FUN_000008b4
+  - from: lookup
+    to: existing_instance_reused
+    trigger: FUN_00000858 finds same device ID
+  - from: lookup
+    to: new_descriptor_allocated
+    trigger: no existing entry
+  - from: new_descriptor_allocated
+    to: backend_runtime_allocated
+    trigger: FUN_000007f8 allocates 0x88-byte backend object and calls its vfunc +0x10
+  - from: backend_runtime_allocated
+    to: global_notification_manager_ensured
+    trigger: FUN_000023f4 ensures shared notification receiver
+  - from: global_notification_manager_ensured
+    to: instance_registered
+    trigger: descriptor inserted into DAT_00005148 vector
+  - from: instance_registered
+    to: open
+    trigger: _AudioDriverPlugInOpen returns success
+  - from: open
+    to: closing
+    trigger: _AudioDriverPlugInClose / FUN_00000b0a path
+  - from: closing
+    to: destroyed
+    trigger: FUN_00002992 drops refcount to zero and destructor vfunc +8 runs
+property_flow:
+  device_get_property_info: Validates descriptor lookup, then delegates to backend object at +0x20 for
+    size/writeability.
+  device_get_property: Validates descriptor and requested buffer, then delegates to backend.
+  device_set_property: Routes property writes to backend / IORegistry bridge.
+  stream_get_property_info/get/set: Resolve plugin by device ID and either report unsupported or delegate.

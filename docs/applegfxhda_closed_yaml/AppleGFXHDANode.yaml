@@ -1,0 +1,70 @@
+class: AppleGFXHDANode
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: generic codec node capability container and power endpoint.
+method_inventory:
+  total_methods: 29
+  lifecycle:
+  - init()
+  - free()
+  power:
+  - supportedPowerStates()
+  - setPowerState(unsigned int, bool)
+  - performPowerRailRestore()
+  - currentPowerLevel()
+  - idlePowerLevel()
+  - maximumPowerLimit()
+  stream_dma_format:
+  - supportedSampleSizeRates()
+  - supportedStreamFormats()
+  - isAudioStreamSupported(unsigned int, unsigned int, unsigned int)
+  - isSampleRateSupported(unsigned int)
+  - isSampleFormatSupported(unsigned int, unsigned int, unsigned int)
+  controls: []
+  events_interrupts:
+  - setMessageLoggingMode(unsigned int)
+  topology_codec_graph:
+  - ~AppleGFXHDANode()
+  - AppleGFXHDANode()
+  - nodeID()
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - outputAmpCaps()
+  - inputAmpCaps()
+  - vendorProductID()
+  - revisionID()
+  - inputDelay()
+  - outputDelay()
+  - isBitDepthSupported(unsigned int)
+  - type()
+state_machine:
+  states:
+  - allocated
+  - initialized
+  - operational
+  - power_transition
+  - freed
+  entrypoints:
+  - init()
+  - setPowerState(unsigned int, bool)
+  - performPowerRailRestore()
+  - free()
+  transitions:
+  - base node methods are inherited/extended by widgets
+callgraph_focus:
+  upstream_dependencies:
+  - controller/function-group discovery path
+  downstream_targets:
+  - engine route selection / stream format / pin control
+  key_observable_fields_or_concepts:
+  - power
+  - stream
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

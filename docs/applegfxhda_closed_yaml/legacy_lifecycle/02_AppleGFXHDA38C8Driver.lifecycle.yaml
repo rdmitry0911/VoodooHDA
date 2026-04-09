@@ -1,0 +1,78 @@
+module: AppleGFXHDA38C8Driver
+role: vendor/model-specific AppleGFXHDADriver subclass for 0x38C8 family
+confidence: mostly_confirmed
+entrypoints:
+- completeStart()
+- handleValidEDIDAction()
+- handleInvalidEDID()
+- message()
+- systemWillShutdown()
+- protectedSetPowerState()
+subclass_startup_fsm:
+  states:
+  - base_driver_ready
+  - pm_strings_cleared
+  - provider_attached
+  - publish_children_optional
+  - controller_powered
+  - engine_collection_ready_or_absent
+  - audio_engine_activated
+  - running
+  transitions:
+  - from: base_driver_ready
+    to: pm_strings_cleared
+    trigger: completeStart zeroes +0xf8/+0x100 and invokes two subclass virtual resets
+  - from: pm_strings_cleared
+    to: provider_attached
+    trigger: provider attach/check through IOService-like call succeeds
+  - from: provider_attached
+    to: publish_children_optional
+    trigger: preserveIODeviceTree property check may emit mac-io-publishChildren
+  - from: publish_children_optional
+    to: controller_powered
+    trigger: protectedWaitForPowerOn + controller activation path succeeds
+  - from: controller_powered
+    to: engine_collection_ready_or_absent
+    trigger: branch on object at +0x88
+  - from: engine_collection_ready_or_absent
+    to: audio_engine_activated
+    trigger: event source / object created and virtual 0x950 activation succeeds
+  - from: audio_engine_activated
+    to: running
+    trigger: service registration + final cleanup
+edid_state_machine:
+  states:
+  - unknown
+  - valid_edid_action_pending
+  - valid_edid_handled
+  - invalid_edid_received
+  - engine_match_found
+  - engine_deactivated_or_additional_source_removed
+  inputs:
+  - message() codes 0xe03f8003 / 0xe03f8004 / 0xe03f800b
+  - HDAGFXHeadAssociationStruct*
+  valid_edid_flow:
+  - Acquire power/lock context.
+  - Wait for controller power on.
+  - Invoke subclass virtual action at 0xac8 if power/status fields +0xa8/+0xac permit.
+  - Release lock.
+  invalid_edid_flow:
+  - Validate parameters and controller/driver state.
+  - Check display attached / ready predicates through controller methods.
+  - Match incoming head association against engine list at +0x148.
+  - If mux conditions demand, remove additional DP audio source; else deactivate matching audio engine.
+message_dispatch:
+  notable_cases:
+  - code: '0xe03f8003'
+    meaning: invalid EDID style event; toggles +0x1d2 and dispatches invalid-EDID action
+  - code: '0xe03f8004'
+    meaning: valid/reconfigure style event; may start or restart action path through object at +0x1e8
+      and provider dispatcher
+  - code: '0xe03f800b'
+    meaning: one-bit flag update into this[0x185] from param_3
+  side_effects:
+  - Can schedule work on provider event gate / command gate.
+  - Can invoke EDID-related activate/deactivate flows.
+shutdown_power:
+  systemWillShutdown: Subclass-specific shutdown path exists.
+  protectedSetPowerState: Model-specific power state transition hook exists.

@@ -1,0 +1,41 @@
+class: AppleGFXHDAEngineUserClient
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: user client endpoint bound to one engine for control/volume/etc interactions.
+method_inventory:
+  total_methods: 7
+  lifecycle:
+  - clientClose()
+  power: []
+  stream_dma_format: []
+  controls: []
+  events_interrupts: []
+  topology_codec_graph: []
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDAEngineUserClient()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDAEngineUserClient()
+state_machine:
+  states:
+  - allocated
+  - attached
+  - closing
+  - dead
+  entrypoints:
+  - clientClose()
+  transitions:
+  - clientClose propagates cleanup back to engine
+callgraph_focus:
+  upstream_dependencies:
+  - kernel client open
+  downstream_targets:
+  - parent engine/driver cleanup callbacks
+  key_observable_fields_or_concepts: []
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

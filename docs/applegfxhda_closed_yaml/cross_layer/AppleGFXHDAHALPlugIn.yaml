@@ -1,0 +1,51 @@
+component: AppleGFXHDAHALPlugIn
+source: AppleGFXHDAHALPlugIn_decompiled.c
+role: User-space HAL plug-in bridging CoreAudio HAL objects to kernel IOService/IOAudioControl
+  objects, including per-device instance registry and mach/dispatch notification transport.
+named_entrypoints:
+- _AudioDriverPlugInOpen
+- _AudioDriverPlugInClose
+- _AudioDriverPlugInDeviceGetPropertyInfo
+- _AudioDriverPlugInDeviceGetProperty
+- _AudioDriverPlugInDeviceSetProperty
+- _AudioDriverPlugInStreamGetPropertyInfo
+- _AudioDriverPlugInStreamGetProperty
+- _AudioDriverPlugInStreamSetProperty
+anonymous_core_functions:
+- FUN_00000858 (lookup plugin instance by device id)
+- FUN_000008b4 (create/register plugin instance)
+- FUN_000021b6 (enumerate IOAudioControl children and cache control descriptors)
+- FUN_000033e2/FUN_0000353a/FUN_00003668/FUN_000036ee (mach/dispatch notification
+  lifecycle)
+state_machine:
+  states:
+  - global_uninitialized
+  - registry_ready
+  - per_device_created
+  - service_open
+  - control_cache_enumerated
+  - notification_port_live
+  - dispatch_source_live
+  - closed
+  transitions:
+  - from: global_uninitialized
+    to: registry_ready
+    via: first create path allocates global vector + mutex
+  - from: registry_ready
+    to: per_device_created
+    via: FUN_000008b4
+  - from: per_device_created
+    to: service_open
+    via: _AudioDriverPlugInOpen / IOServiceOpen
+  - from: service_open
+    to: control_cache_enumerated
+    via: IORegistry iteration over IOAudioControl entries
+  - from: service_open
+    to: notification_port_live
+    via: mach port allocation and setup
+  - from: notification_port_live
+    to: dispatch_source_live
+    via: dispatch queue/source creation and resume
+  - from: dispatch_source_live
+    to: closed
+    via: _AudioDriverPlugInClose / IOServiceClose / dispatch+mach teardown

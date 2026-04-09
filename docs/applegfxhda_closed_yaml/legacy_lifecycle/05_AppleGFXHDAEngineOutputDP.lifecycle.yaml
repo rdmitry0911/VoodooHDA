@@ -1,0 +1,45 @@
+module: AppleGFXHDAEngineOutputDP
+role: DisplayPort output-specific engine with mux/head-association logic
+confidence: mixed_confirmed_and_inferred
+entrypoints:
+- initAudioStream
+- setPowerStateToActive
+- setPowerStateToIdle
+- setPowerStateToSleep
+- stopAudioEngine
+- getGFXMuxSwitchHeadAssociations
+fsm:
+  states:
+  - unbound
+  - stream_initialized
+  - associated_with_head
+  - active
+  - idle
+  - sleep
+  - deactivated
+  transitions:
+  - from: unbound
+    to: stream_initialized
+    trigger: initAudioStream
+  - from: stream_initialized
+    to: associated_with_head
+    trigger: head association / framebuffer binding
+  - from: associated_with_head
+    to: active
+    trigger: power active + DMA/engine start
+  - from: active
+    to: idle
+    trigger: idle power path
+  - from: idle
+    to: sleep
+    trigger: sleep power path
+  - from: active
+    to: deactivated
+    trigger: invalid EDID handling or explicit deactivateAudioEngine
+  - from: deactivated
+    to: associated_with_head
+    trigger: revalidation / valid EDID / reattach
+special_rules:
+- Invalid-EDID handling can remove an additional DP audio source instead of full engine deactivation when
+  gfx mux association count indicates multiple heads.
+- Power methods mirror base engine behavior but are DP/display-aware.

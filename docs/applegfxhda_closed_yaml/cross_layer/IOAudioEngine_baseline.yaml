@@ -1,0 +1,127 @@
+class: IOAudioEngine
+source: IOAudioFamily_decompiled.c
+role: Superclass contract inherited by AppleGFXHDAEngine. Defines service start/stop,
+  workloop/command-gate setup, notification/status buffer semantics, and abstract
+  performAudioEngineStart/Stop hooks.
+key_methods:
+- IOAudioEngine
+- ~IOAudioEngine
+- ~IOAudioEngine
+- ~IOAudioEngine
+- getMetaClass
+- _RESERVEDIOAudioEngine17
+- _RESERVEDIOAudioEngine18
+- _RESERVEDIOAudioEngine19
+- _RESERVEDIOAudioEngine20
+- _RESERVEDIOAudioEngine21
+- _RESERVEDIOAudioEngine22
+- _RESERVEDIOAudioEngine23
+- _RESERVEDIOAudioEngine24
+- _RESERVEDIOAudioEngine25
+- _RESERVEDIOAudioEngine26
+- _RESERVEDIOAudioEngine27
+- _RESERVEDIOAudioEngine28
+- _RESERVEDIOAudioEngine29
+- _RESERVEDIOAudioEngine30
+- _RESERVEDIOAudioEngine31
+- _RESERVEDIOAudioEngine32
+- _RESERVEDIOAudioEngine33
+- _RESERVEDIOAudioEngine34
+- _RESERVEDIOAudioEngine35
+- _RESERVEDIOAudioEngine36
+- _RESERVEDIOAudioEngine37
+- _RESERVEDIOAudioEngine38
+- _RESERVEDIOAudioEngine39
+- _RESERVEDIOAudioEngine40
+- _RESERVEDIOAudioEngine41
+- _RESERVEDIOAudioEngine42
+- _RESERVEDIOAudioEngine43
+- _RESERVEDIOAudioEngine44
+- _RESERVEDIOAudioEngine45
+- _RESERVEDIOAudioEngine46
+- _RESERVEDIOAudioEngine47
+- setAttributeForConnection
+- getAttributeForConnection
+- calculateSampleTimeoutHiRes
+- useHiResSampleInterval
+- createUserClient
+- setInputSampleOffset
+- setOutputSampleOffset
+- convertInputSamplesVBR
+- setClockDomain
+- setClockIsStable
+- getStreamForID
+- getNextStreamID
+- performFormatChange
+- getStatusDescriptor
+- getNearestStartTime
+- getBytesInInputBufferArrayDescriptor
+- getBytesInOutputBufferArrayDescriptor
+- eraseOutputSamples
+- setMixClipOverhead
+- initKeys
+- createDictionaryFromSampleRate
+- createSampleRateFromDictionary
+- timerCallback
+- free
+- initHardware
+- start
+- start
+- setWorkLoopOnAllAudioControls
+- stop
+- detachUserClientsAction
+- getWorkLoop
+- getCommandGate
+- registerService
+- getGlobalUniqueID
+- getLocalUniqueID
+- setIndex
+- setAudioDevice
+- setDescription
+- resetStatusBuffer
+- clearAllSampleBuffers
+- createUserClient
+- newUserClient
+- newUserClient
+- _addUserClientAction
+baseline_state_machine:
+  states:
+  - constructed
+  - service_started
+  - workloop_ready
+  - command_gate_ready
+  - hardware_initialized_by_subclass
+  - running
+  - paused_or_suspended
+  - stopped
+  - freed
+  transitions:
+  - from: constructed
+    to: service_started
+    via: start
+  - from: service_started
+    to: workloop_ready
+    via: start creates/obtains workloop and command gate
+  - from: workloop_ready
+    to: hardware_initialized_by_subclass
+    via: subclass initHardware / subclass-specific setup
+  - from: hardware_initialized_by_subclass
+    to: running
+    via: startAudioEngine -> performAudioEngineStart (override in AppleGFXHDAEngine)
+  - from: running
+    to: paused_or_suspended
+    via: pauseAudioEngine/resumeAudioEngine/power transitions
+  - from: running
+    to: stopped
+    via: performAudioEngineStop
+  - from: service_started or running
+    to: stopped
+    via: stop
+  - from: stopped
+    to: freed
+    via: free/destructor chain
+contracts_used_by_AppleGFXHDAEngine:
+- performAudioEngineStart/Stop are override points
+- setWorkLoopOnAllAudioControls propagates engine workloop to controls
+- status buffer and sample-frame buffer maintenance are base responsibilities
+- resume/pause semantics and command-gate usage influence subclass power and DMA behavior

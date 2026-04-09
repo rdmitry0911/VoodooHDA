@@ -1,0 +1,103 @@
+class: AppleGFXHDAPath
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: single routed widget chain from converter to pin (or reverse), with per-path amplifier, format, and power operations.
+method_inventory:
+  total_methods: 59
+  lifecycle:
+  - free()
+  power:
+  - setPowerState(unsigned int)
+  - sleepPrefixTasks()
+  - currentPowerLevel()
+  - idlePowerLevel()
+  - maximumPowerLimit()
+  - setProviderPowerState(unsigned int)
+  stream_dma_format:
+  - isAudioStreamSupported(unsigned int, unsigned int, unsigned int)
+  - formatForBitDepth(unsigned char)
+  - shouldPublishVolumeForSpatialChannel(unsigned int)
+  - getPathControlForSpatialChannel(unsigned int)
+  - shouldPublishMuteForSpatialChannel(unsigned int)
+  - respondsToSpatialChannel(unsigned int, unsigned int)
+  - getSampleLatency()
+  - getCoreAudioChannelCount()
+  - getLinkChannelCount()
+  - getPathPreDMADelayTime()
+  controls:
+  - isWidgetAmplifierMuteCapable(unsigned int)
+  - setWidgetAmplifierMute(bool, unsigned int)
+  - getPathControlCount()
+  - requiresSoftwareVolume()
+  events_interrupts:
+  - setMessageLoggingMode(unsigned int)
+  - getUnsolicitedTagForDeviceType()
+  - getNonRetaskedUnsolicitedTagForDeviceType()
+  topology_codec_graph:
+  - ~AppleGFXHDAPath()
+  - AppleGFXHDAPath()
+  - showWidgetPath()
+  - isWidgetAmplifierGainAdjustable(unsigned int)
+  - setWidgetAmplifierGain(unsigned char, unsigned int)
+  - setWidgetAmplifierBoost(unsigned char)
+  - setWidgetAmplifierBoostDefault()
+  - setWidgetAmplifierTo0dB(unsigned char, unsigned int)
+  - isInputPath()
+  - isPinDigital()
+  - pinDefaultDeviceType()
+  - converterWidgetType()
+  - numberOfWidgetsInPath()
+  - pinConfigDefault()
+  - pinDefaultAssociation()
+  - pinPhysicalLocation()
+  - pinDefaultDeviceTypeSupportedForOutput()
+  - pinDefaultDeviceTypeSupportedForInput()
+  - supportsWidgetWithTypeAndNodeID(unsigned int, unsigned int)
+  - pinSequence()
+  - pinNodeID()
+  - pinConnectionType()
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - disable()
+  - usageType()
+  - isConverterDigital()
+  - getCharCodeForDefaultDeviceType()
+  - getStringForDefaultDeviceType()
+  - getLinkStripeCountCapability()
+  - getLinkStripeCount()
+  - setLinkStripeCount(unsigned int)
+  - setSpeakerConfiguration(unsigned int)
+state_machine:
+  states:
+  - allocated
+  - topology_built
+  - enabled
+  - disabled
+  - power_transition
+  - freed
+  entrypoints:
+  - disable()
+  - setPowerState(unsigned int)
+  - free()
+  transitions:
+  - format/channel support and amplifier control are evaluated at path granularity before publication upstream
+callgraph_focus:
+  upstream_dependencies:
+  - controller/function-group discovery path
+  downstream_targets:
+  - engine route selection / stream format / pin control
+  key_observable_fields_or_concepts:
+  - unsolicited
+  - DMA
+  - power
+  - stream
+  - pin
+  - widget
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

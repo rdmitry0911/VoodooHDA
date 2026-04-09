@@ -1,0 +1,44 @@
+class: AppleGFXHDAPathControl
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: AppleGFXHDAPathControl class extracted from AppleGFXHDA decompile; see method inventory for exact visible responsibilities.
+method_inventory:
+  total_methods: 13
+  lifecycle: []
+  power: []
+  stream_dma_format:
+  - shouldPublishVolumeForSpatialChannel(unsigned int)
+  - shouldPublishMuteForSpatialChannel(unsigned int)
+  - respondsToSpatialChannel(unsigned int)
+  - bindsToSpatialChannel(unsigned int)
+  - spatialChannelID()
+  controls:
+  - ~AppleGFXHDAPathControl()
+  - AppleGFXHDAPathControl()
+  - requiresSoftwareVolume()
+  events_interrupts: []
+  topology_codec_graph: []
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - spatialBindingID()
+state_machine:
+  states:
+  - allocated
+  - operational
+  - terminating_or_power_transition
+  - freed
+  entrypoints: []
+  transitions:
+  - See method_inventory buckets; explicit transition edges are limited by decompiler naming coverage.
+callgraph_focus:
+  upstream_dependencies: []
+  downstream_targets: []
+  key_observable_fields_or_concepts: []
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

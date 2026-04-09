@@ -1,0 +1,33 @@
+module: AppleGFXHDANode
+role: individual HDA node power / capability unit
+confidence: confirmed
+entrypoints:
+- init
+- initForNodeID
+- setPowerState(unsigned int, bool)
+- isAudioStreamSupported
+- isSampleRateSupported
+- free
+power_model:
+  current_state_field: '+0x50'
+  supported_state_mask_field: this[0x2c] bits
+  verb: 0x705 sent when requested state is supported
+fsm:
+  states:
+  - state0
+  - state1
+  - state2
+  - state3
+  - state4
+  transitions:
+  - from: any
+    to: stateN
+    trigger: setPowerState(N, force|transition)
+  - from: stateN
+    to: stateN
+    trigger: redundant transition rejected if not forced
+transition_rules:
+- If not forced and target equals cached current state, returns duplicate-transition style error.
+- For states 0..4, checks a support bit derived from this[0x2c] shifted by state index.
+- If supported, emits node command via virtual call (verb 0x705, payload target state).
+- On success or unsupported-but-nonfatal branch, updates cached current state field +0x50.

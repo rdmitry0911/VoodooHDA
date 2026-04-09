@@ -1,0 +1,31 @@
+module: AppleGFXHDAWidget
+role: codec widget object with richer amplifier / routing / power behavior layered atop node semantics
+confidence: mixed_confirmed_and_inferred
+entrypoints:
+- init
+- probeConnectionIndex
+- setPowerState(unsigned int, bool)
+- setPowerState(unsigned int, AppleGFXHDAWidget*, bool)
+- setPowerStateDelegate(AppleGFXHDAWidget*)
+- free
+fsm:
+  states:
+  - widget_off
+  - widget_idle
+  - widget_active
+  - delegate_driven_transition
+  transitions:
+  - from: widget_off
+    to: widget_active
+    trigger: path/node activation
+  - from: widget_active
+    to: widget_off
+    trigger: sleep/stop/power-down
+  - from: any
+    to: delegate_driven_transition
+    trigger: setPowerStateDelegate configured and delegate path used
+behavior_notes:
+- Widget power changes can program multiple underlying verbs/registers, not just a single node command.
+- When connection list / amplifier state is present, widget power transition may restore additional routing
+  or gain values.
+- Delegate-based power state exists for composite widget relationships.

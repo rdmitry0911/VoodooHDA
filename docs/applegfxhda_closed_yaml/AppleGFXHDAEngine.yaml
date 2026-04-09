@@ -1,0 +1,128 @@
+class: AppleGFXHDAEngine
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: base IOAudioEngine-like object for one logical audio engine with path-set selection, virtual stream support, HAL plug-in presence, and power redirection.
+method_inventory:
+  total_methods: 67
+  lifecycle:
+  - free()
+  - performAudioEngineStart()
+  - performAudioEngineStop()
+  - terminate(unsigned int)
+  power:
+  - handlePowerStateChange(unsigned int, bool)
+  - handlePowerStateRedirection()
+  - setPowerStateToActive(unsigned int)
+  - setPowerStateToIdle()
+  - setPowerStateToSleep()
+  - performDeferredPowerDownTask()
+  - currentPowerLevel()
+  - idlePowerLevel()
+  - maximumPowerLimit()
+  stream_dma_format:
+  - destroyVirtualInputStreamEnableToggleControl()
+  - startDMAEngine(bool)
+  - stopDMAEngine(bool)
+  - getCurrentSampleFrame()
+  - allocateVirtualStreamMemory()
+  - translateCoreChannelIDtoHDAChannelID(unsigned int)
+  - createVirtualInputStreamEnableToggleControl()
+  - updateVirtualInputStreamToggleControl()
+  - translateHDAChannelIDToCoreChannelID(unsigned int)
+  - replaceAvailableFormats()
+  - setHDASpatialChannelMuteViaUserClient(unsigned int, unsigned char)
+  - recalculateEnginesSampleOffset()
+  - recalculateEnginesSampleLatency()
+  - setEngineSampleLatency(int)
+  controls:
+  - controllerForcedPause(bool)
+  - createVolumeControlForActivePathSet(unsigned int, unsigned int)
+  - createMuteControlForActivePathSet(unsigned int, unsigned int)
+  - createVolumeAndMuteControlsForActivePathSet(unsigned int)
+  - destroyVolumeAndMuteControls()
+  - clientTypeIgnoresUserVolume(unsigned int)
+  - storeBootVolumeLevel(unsigned char)
+  - storeBootVolumeInDB()
+  - flushVolumeToPublishedAndNonPublishedControls()
+  - flushMuteToPublishedAndNonPublishedControls()
+  - setSoftwareMute(bool, unsigned int)
+  - setHardwareVolumeViaUserClient(unsigned char)
+  events_interrupts:
+  - supportsPortForUnsolicitedTag(unsigned int)
+  - currentPathsupportsUnsolicitedTag(unsigned int)
+  - handleUnsolicitedResponse(unsigned int, unsigned int, unsigned int)
+  - setMessageLoggingMode(unsigned int)
+  topology_codec_graph:
+  - getSelectedPathSet() const
+  - getPathSetForPathSetIndex(unsigned int) const
+  - getHighestPriorityConnectedPathSet()
+  - getLowestPriorityPathSet()
+  - getPathSetForPinDefaultDeviceType(unsigned int)
+  - supportsWidgetWithTypeAndNodeID(unsigned int, unsigned int)
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDAEngine()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - getGlobalUniqueID(bool)
+  - getLocalUniqueID()
+  - setIndex(unsigned int)
+  - getHdmiDpContext()
+  - createHalPlugin()
+  - removeHalPlugin()
+  - ignoreVolChanges(bool)
+  - stopAudioEngine()
+  - setDSPModeViaUserClient(unsigned int)
+  - userClientDied()
+  - isANan(float)
+  - isDenormal(float&)
+  - adjustEngineForClientType(unsigned int, unsigned int)
+state_machine:
+  states:
+  - uninitialized
+  - initialized
+  - virtual_stream_memory_ready
+  - controls_created
+  - dma_starting
+  - running
+  - paused_or_forced_stop
+  - idle
+  - sleep
+  - stopping
+  - terminated
+  - freed
+  entrypoints:
+  - init(IOService*, AppleGFXHDAController*, OSDictionary*, OSArray*, int, void*)
+  - performAudioEngineStart()
+  - performAudioEngineStop()
+  - stopAudioEngine()
+  - terminate(unsigned int)
+  - free()
+  transitions:
+  - init captures controller/driver/path-set topology and prepares stream/control state
+  - performAudioEngineStart -> startDMAEngine ; performAudioEngineStop/stopAudioEngine -> stopDMAEngine
+  - handlePowerStateChange redirects toward setPowerStateToActive/Idle/Sleep or deferred power-down task
+  - createHalPlugin/removeHalPlugin bind engine presence to userspace HAL
+callgraph_focus:
+  upstream_dependencies:
+  - AppleGFXHDADriver
+  - AppleGFXHDAController
+  - AppleGFXHDAPathSet topology
+  downstream_targets:
+  - IOGFXHDAStream
+  - HAL plug-in
+  - IOAudioControl publication
+  key_observable_fields_or_concepts:
+  - unsolicited
+  - PathSet
+  - DMA
+  - power
+  - stream
+  - pin
+  - widget
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

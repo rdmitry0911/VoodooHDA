@@ -1,0 +1,45 @@
+class: AppleGFXHDAFunctionGroupATI_RS780
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: ATI/AMD RS780 codec policy subclass overriding function-group behavior.
+method_inventory:
+  total_methods: 11
+  lifecycle:
+  - init()
+  power:
+  - analogReferenceCollapsesInPowerState(unsigned int)
+  stream_dma_format: []
+  controls: []
+  events_interrupts: []
+  topology_codec_graph:
+  - pathMapCanBeConstructedByDiscovery()
+  - codecRequiresPolling()
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDAFunctionGroupATI_RS780()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDAFunctionGroupATI_RS780()
+  - audioFunctionGroupStartupDelay()
+state_machine:
+  states:
+  - allocated
+  - operational
+  - terminating_or_power_transition
+  - freed
+  entrypoints:
+  - init()
+  transitions:
+  - See method_inventory buckets; explicit transition edges are limited by decompiler naming coverage.
+callgraph_focus:
+  upstream_dependencies: []
+  downstream_targets: []
+  key_observable_fields_or_concepts:
+  - power
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

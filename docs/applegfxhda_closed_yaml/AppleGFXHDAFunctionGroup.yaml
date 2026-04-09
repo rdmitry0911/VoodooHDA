@@ -1,0 +1,102 @@
+class: AppleGFXHDAFunctionGroup
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: audio function group abstraction for codec capabilities, widget registry, power-rail semantics, and vendor-specific policy.
+method_inventory:
+  total_methods: 57
+  lifecycle:
+  - init()
+  - free()
+  power:
+  - forcedWakeToIdle()
+  - codecMakesQuietPowerTransitions()
+  - setPowerState(unsigned int, bool)
+  - performPowerRailRestore()
+  - performPowerRailSave()
+  - getAFGLowPowerState()
+  - setAFGLowPowerState(unsigned int)
+  - getTimeInPowerState()
+  - delayEnablingURonWake()
+  - analogReferenceCollapsesInPowerState(unsigned int)
+  - idlePowerLevel()
+  stream_dma_format:
+  - streamRequiresDescendingStreamIDAllocation()
+  - setChannelAllocation(unsigned int)
+  controls:
+  - codecRequiresSoftVolumeForInput()
+  - codecRequiresSoftVolumeForOutput()
+  - isAmplifierMuteCapable(unsigned int)
+  - getMillisecondDelayForVolumeToPropagateToHw()
+  - getMillisecondDelayForMuteToPropagateToHw()
+  - getLineInMuteWidgetForConverter(unsigned int)
+  events_interrupts: []
+  topology_codec_graph:
+  - getWidgetCount()
+  - getWidgetForIndex(unsigned int)
+  - getWidgetWithNodeID(unsigned short)
+  - getPinWidgetForType(unsigned int)
+  - getCodecAddress()
+  - pathMapCanBeConstructedByDiscovery()
+  - codecRequiresPolling()
+  - displayPortPinSupported(unsigned int, unsigned int, unsigned int)
+  - unsolictedCachePinSense()
+  - funcGroupSupportsMultiplePaths()
+  - getAFG_AnalogReferenceChargeRate_nanoSeconds()
+  - getAFG_AnalogReferenceDischargeRate_nanoSeconds()
+  - handleAFGInputNone(bool, unsigned int)
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDAFunctionGroup()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDAFunctionGroup()
+  - hdmiCapable()
+  - displayPortCapable()
+  - getInputDelay()
+  - getOutputDelay()
+  - isAmplifierGainAdjustable(unsigned int)
+  - doubleFunctionGroupReset()
+  - audioFunctionGroupStartupDelay()
+  - getPollItemCount()
+  - supportsEPSS()
+  - supportsS3D3cold()
+  - supportsD3Cold()
+  - deviceSelectOnMST(unsigned int, unsigned int)
+  - clockStopSupported()
+  - setSpeakerConfiguration(unsigned int)
+  - speakerConfiguration()
+  - isGPIOIdentifierValid()
+  - sinkDeviceAttached(unsigned char)
+state_machine:
+  states:
+  - allocated
+  - initialized
+  - widgets_enumerated
+  - operational
+  - power_transition
+  - freed
+  entrypoints:
+  - init()
+  - setPowerState(unsigned int, bool)
+  - performPowerRailRestore()
+  - performPowerRailSave()
+  - free()
+  transitions:
+  - function group mediates codec-specific low-power behavior and widget lookup for path construction
+callgraph_focus:
+  upstream_dependencies:
+  - controller/function-group discovery path
+  downstream_targets:
+  - engine route selection / stream format / pin control
+  key_observable_fields_or_concepts:
+  - power
+  - stream
+  - pin
+  - widget
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

@@ -1,0 +1,45 @@
+component: Intel framebuffer audio bridge
+sources:
+- AppleIntelCFLGraphicsFramebuffer_decompiled.c
+- AppleIntelKBLGraphicsFramebuffer_decompiled.c
+- IOGraphicsFamily_development_decompiled.c
+role: 'Graphics side of the closure: publishes framebuffer notifications, AGDC stream
+  association, AUX/I2C/EDID accessors and display mode change callbacks that AppleGFXHDAController
+  consumes.'
+key_observations:
+- AppleIntelFramebuffer::frameBufferNotificationCallback handles display mode change/defer
+  notifications.
+- AppleIntelFramebufferController exposes AGDC Get/SetStreamAssociation and StreamGetEDID
+  operations.
+- Framebuffer controller also exposes AUX/I2C access helpers and DP capability reads
+  needed for sink interrogation.
+bridge_into_AppleGFXHDA:
+- AppleGFXHDAController::framebufferEventHandler processes IOFramebuffer notifications
+  and derived graphics state.
+- AppleGFXHDAController::updateVideoMode stores/returns per-head mode information.
+- AppleGFXHDADriver message/EDID handlers react to controller-mediated events, especially
+  in AppleGFXHDA38C8Driver.
+state_machine:
+  states:
+  - fb_alive
+  - mode_will_change
+  - mode_did_change
+  - edid_available
+  - association_known
+  - audio_notification_delivered
+  transitions:
+  - from: fb_alive
+    to: mode_will_change
+    via: kIOFBNotifyDisplayModeWillChange
+  - from: mode_will_change
+    to: mode_did_change
+    via: kIOFBNotifyDisplayModeDidChange
+  - from: fb_alive
+    to: edid_available
+    via: AGDC StreamGetEDID / DP AUX reads
+  - from: fb_alive
+    to: association_known
+    via: AGDC Get/SetStreamAssociation
+  - from: mode/edid/association state
+    to: audio_notification_delivered
+    via: AppleGFXHDAController framebufferEventHandler/processFBMessage

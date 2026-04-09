@@ -1,0 +1,110 @@
+module: AppleGFXHDADriver
+role: top-level kernel audio device orchestrator
+confidence: mixed_confirmed_and_inferred
+entrypoints:
+- start(IOService*)
+- handleAsynchronousStart(void*)
+- startAction()
+- completeStart()
+- terminate(unsigned int)
+- free()
+- systemWillShutdown()
+- systemWillShutdownGated()
+- activateAudioEngines()
+- setPowerStateToActive()
+fields_of_interest:
+  provider: '+0xe0'
+  controller: '+0x138'
+  controller_like_object: '+0x140'
+  engine_collection: '+0x148'
+  name_buffer: '+0x128'
+  instance_index_or_lock_state: fInstanceIndex global plus per-instance flags
+startup_fsm:
+  states:
+  - name: constructed
+    meaning: C++ object exists, provider not yet bound
+  - name: provider_bound
+    meaning: start() stores provider at +0xe0
+  - name: name_and_lock_allocated
+    meaning: allocates naming/storage structures and per-instance data
+  - name: async_start_queued
+    meaning: handleAsynchronousStart queued on provider workloop/gate
+  - name: startAction_running
+    meaning: controller presence checked; completeStart about to run
+  - name: completeStart_running
+    meaning: heavy initialization in progress
+  - name: ready_to_send_fb_msgs
+    meaning: controller notified via readyToSendFBMsg after successful start
+  - name: running
+    meaning: driver active; engines can be activated / powered
+  - name: terminating
+    meaning: terminate/systemWillShutdown paths entered
+  - name: freed
+    meaning: free() released retained objects and buffers
+  transitions:
+  - from: constructed
+    to: provider_bound
+    trigger: start(provider!=NULL)
+  - from: provider_bound
+    to: name_and_lock_allocated
+    trigger: internal allocations succeed
+  - from: name_and_lock_allocated
+    to: async_start_queued
+    trigger: workloop async scheduling succeeds
+  - from: async_start_queued
+    to: startAction_running
+    trigger: provider workloop invokes startAction
+  - from: startAction_running
+    to: completeStart_running
+    trigger: controller pointer at +0x138 present and no fatal power/error predicate
+  - from: completeStart_running
+    to: ready_to_send_fb_msgs
+    trigger: completeStart returns success
+  - from: ready_to_send_fb_msgs
+    to: running
+    trigger: AppleGFXHDAController::readyToSendFBMsg() called
+  - from: running
+    to: terminating
+    trigger: terminate/systemWillShutdown/stop
+  - from: terminating
+    to: freed
+    trigger: free()
+  failure_edges:
+  - at: start
+    causes:
+    - null provider
+    - allocation failure
+    - async scheduling failure
+  - at: startAction
+    causes:
+    - controller missing at +0x138
+    - power/error predicate true
+    - subclass completeStart failure
+  - at: completeStart
+    causes:
+    - controller-like object missing at +0x140
+    - child/service setup failure
+    - engine activation failure
+completeStart_semantics:
+  base_driver:
+  - Requires controller-like object at +0x140.
+  - Performs PM/property initialization and instance-index tracking.
+  - Registers / publishes itself and/or children, then creates or activates audio engines.
+  - On success, retained temporary objects at +0xe8/+0xf0 are released and running state is entered.
+  - On failure, fInstanceIndex is decremented and registration / retained temporaries are unwound.
+  observable_effects:
+  - Interaction with provider via virtual calls at offsets including 0x5c8, 0x878, 0x990, 0xaa0, 0xac8,
+    etc.
+  - Controller cooperation gates final readiness; success path ends with readyToSendFBMsg on controller.
+runtime_events:
+  power:
+  - setPowerStateToActive() drives engine/path activation.
+  - systemWillShutdown()/systemWillShutdownGated() quiesce for shutdown.
+  engines:
+  - activateAudioEngines() brings engine collection online.
+  - Engine de/activation is coordinated with controller display/EDID state in subclasses.
+teardown:
+  terminate: Transitions service toward teardown/quiesce; exact subcalls partially virtualized.
+  free:
+  - Releases retained objects, collections, strings, and other allocated state.
+  - Final object teardown follows normal IOService/OSObject free chain.

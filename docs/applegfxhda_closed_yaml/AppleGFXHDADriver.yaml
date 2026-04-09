@@ -1,0 +1,116 @@
+class: AppleGFXHDADriver
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: top-level IOAudioDevice-style kernel driver coordinating controller, audio function group, engines, power policy, unsolicited responses, and graphics association verification.
+method_inventory:
+  total_methods: 58
+  lifecycle:
+  - startAction()
+  - completeStart()
+  - terminate(unsigned int)
+  - free()
+  power:
+  - setPowerProperties(unsigned int, unsigned int, unsigned int)
+  - currentPowerLevel()
+  - idlePowerLevel()
+  - maximumPowerLimit()
+  - protectedWaitForPowerOn()
+  - protectedPowerChangeAction(_IOAudioDevicePowerState)
+  - protectedPowerChange_active(_IOAudioDevicePowerState, bool)
+  - protectedPowerChange_idle(_IOAudioDevicePowerState, bool)
+  - protectedPowerChange_sleep(_IOAudioDevicePowerState, bool)
+  - dispatchPowerStateToEngines(unsigned int, bool)
+  - setPowerStateToActive()
+  - scheduleDelayedIdlePowerState()
+  - systemWillShutdown(unsigned int)
+  - systemWillShutdownGated()
+  - waitForPendingPowerStateChange()
+  - protectedWaitForPendingPowerStateChange()
+  - updatePowerProfileProperties()
+  - getPowerState()
+  - gatherPowerDataFromEngines(unsigned int)
+  - getAFGPowerState()
+  - setAFGPowerState(unsigned int)
+  - getAFGLowPowerState()
+  - setAFGLowPowerState(unsigned int)
+  - registerAfgPowerStateWithController(unsigned int, unsigned int)
+  stream_dma_format: []
+  controls:
+  - getGFXAudioController() const
+  - notifyControllerOfPolling(bool)
+  - getPathSetForControlKey(unsigned int)
+  - releaseControlKey(unsigned int)
+  - tunnelledHDAController()
+  events_interrupts:
+  - engineForUnsolicitedTag(unsigned int)
+  - handleUnsolicitedResponseGated(unsigned int, unsigned int)
+  - handleUnsolicitedResponsePinSenseCacheSupport(unsigned int, unsigned int)
+  - handleUnsolicitedResponse(unsigned int, unsigned int)
+  topology_codec_graph:
+  - checkForDisplayCodec()
+  - unsolictedCachePinSense()
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDADriver()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDADriver()
+  - constructDictionariesByDiscovery()
+  - logLayoutXML()
+  - activateAudioEngines()
+  - audioEngineStarting()
+  - audioEngineStopped()
+  - setAggressiveness(unsigned long, unsigned long)
+  - dispatchStatelessTagToEngines(unsigned int, unsigned int, unsigned int)
+  - logTags(unsigned int, unsigned int)
+  - userClientDied()
+  - verifyGraphicsAssociation()
+  - getAudioFunctionGroup() const
+  - handleClockStopRequest(bool)
+  - displayIsReady()
+state_machine:
+  states:
+  - allocated
+  - starting_async
+  - awaiting_controller_ready
+  - controller_ready
+  - constructing_topology
+  - engines_activatable
+  - active
+  - idle_power
+  - sleep_power
+  - terminating
+  - freed
+  entrypoints:
+  - start(IOService*) [inferred from previous pass]
+  - handleAsynchronousStart(void*)
+  - startAction()
+  - completeStart()
+  - terminate(unsigned int)
+  - free()
+  transitions:
+  - handleAsynchronousStart -> startAction on provider workloop gate
+  - startAction -> AppleGFXHDAController::readyToSendFBMsg when graphics/controller association succeeds
+  - completeStart -> constructDictionariesByDiscovery / activateAudioEngines / power profile setup (callgraph-driven, some internal slots unresolved)
+  - unsolicited response handlers dispatch tags either to engines or stateless tag handlers
+callgraph_focus:
+  upstream_dependencies:
+  - IOService provider
+  - graphics/framebuffer association path
+  downstream_targets:
+  - AppleGFXHDAController
+  - AppleGFXHDAFunctionGroup
+  - AppleGFXHDAEngine / AppleGFXHDAEngineOutputDP
+  key_observable_fields_or_concepts:
+  - EDID
+  - unsolicited
+  - PathSet
+  - power
+  - pin
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

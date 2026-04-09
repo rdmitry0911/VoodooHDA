@@ -1,0 +1,46 @@
+class: AppleGFXHDA8086_9DC8Controller
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: AppleGFXHDA8086_9DC8Controller class extracted from AppleGFXHDA decompile; see method inventory for exact visible responsibilities.
+method_inventory:
+  total_methods: 9
+  lifecycle: []
+  power: []
+  stream_dma_format: []
+  controls:
+  - ~AppleGFXHDA8086_9DC8Controller()
+  - AppleGFXHDA8086_9DC8Controller()
+  - setupAudioController()
+  events_interrupts: []
+  topology_codec_graph:
+  - probeAndInitDisplayCodec()
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - probeAudioLink()
+state_machine:
+  states:
+  - allocated
+  - operational
+  - terminating_or_power_transition
+  - freed
+  entrypoints: []
+  transitions:
+  - See method_inventory buckets; explicit transition edges are limited by decompiler naming coverage.
+callgraph_focus:
+  upstream_dependencies:
+  - IOService provider / PCI controller service
+  - workloop / interrupt gate
+  downstream_targets:
+  - codec registration
+  - IOGFXHDAStream objects
+  - AppleGFXHDADriver
+  key_observable_fields_or_concepts:
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

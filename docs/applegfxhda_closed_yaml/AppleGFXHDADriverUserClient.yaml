@@ -1,0 +1,43 @@
+class: AppleGFXHDADriverUserClient
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: driver-level user client endpoint for broader control/query functions.
+method_inventory:
+  total_methods: 8
+  lifecycle:
+  - clientClose()
+  - clientDied()
+  power: []
+  stream_dma_format: []
+  controls: []
+  events_interrupts: []
+  topology_codec_graph: []
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDADriverUserClient()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDADriverUserClient()
+state_machine:
+  states:
+  - allocated
+  - attached
+  - closing
+  - dead
+  entrypoints:
+  - clientClose()
+  - clientDied()
+  transitions:
+  - clientDied additionally informs the driver for cleanup or bookkeeping
+callgraph_focus:
+  upstream_dependencies:
+  - kernel client open
+  downstream_targets:
+  - parent engine/driver cleanup callbacks
+  key_observable_fields_or_concepts: []
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

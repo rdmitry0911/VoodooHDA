@@ -1,0 +1,155 @@
+module: AppleGFXHDAController
+role: controller-level manager for HDA host interface, interrupts, codecs, framebuffer/display association,
+  and unsolicited responses
+confidence: mixed_confirmed_and_inferred
+entrypoints:
+- probe(IOService*, int*)
+- start(IOService*)
+- handleAsynchronousStart(void*)
+- startAction()
+- processFBMessage(void*, void*)
+- handleSetPowerState(void*, void*)
+- handleUnsolicitedResponse(void*, void*)
+- stop(IOService*)
+- willTerminate
+- terminate
+- didTerminate
+- free()
+- readyToSendFBMsg()
+- protectedWaitForPowerOn()
+- setupHostInterface()
+- setupAudioController()
+- probeAndInitDisplayCodec()
+- probeAudioLink()
+- startCORB()
+- startRIRB()
+- enableControllerInterrupt()
+- disableControllerInterrupt()
+probe_fsm:
+  states:
+  - unmatched
+  - provider_seen
+  - pci_identity_read
+  - routing_defaults_applied
+  - supported_model
+  - probe_success
+  notes:
+  - probe() captures vendor/device/BDF information from provider and records model-specific configuration
+    knobs.
+  - It also determines tunnelled / HDAU string / table-based defaults and returns a score or match decision.
+startup_fsm:
+  states:
+  - constructed
+  - provider_bound
+  - async_start_queued
+  - startAction_running
+  - opened_on_provider
+  - framebuffer_resolved
+  - fb_event_source_allocated
+  - workloop_ready
+  - notifiers_initialized
+  - controller_interface_setup
+  - codec_probe_init
+  - interrupts_running
+  - running
+  transitions:
+  - from: constructed
+    to: provider_bound
+    trigger: start(provider!=NULL)
+  - from: provider_bound
+    to: async_start_queued
+    trigger: provider workloop async dispatch succeeds
+  - from: async_start_queued
+    to: startAction_running
+    trigger: provider invokes startAction
+  - from: startAction_running
+    to: opened_on_provider
+    trigger: provider open call succeeds
+  - from: opened_on_provider
+    to: framebuffer_resolved
+    trigger: provider cast/lookup at +0xb8 succeeds
+  - from: framebuffer_resolved
+    to: fb_event_source_allocated
+    trigger: processFBMessage event source allocated at +0xe0
+  - from: fb_event_source_allocated
+    to: workloop_ready
+    trigger: workloop object at +0xec8 created and attached
+  - from: workloop_ready
+    to: notifiers_initialized
+    trigger: internal linked lists/notifiers initialized
+  - from: notifiers_initialized
+    to: controller_interface_setup
+    trigger: setupHostInterface/setupAudioController paths complete
+  - from: controller_interface_setup
+    to: codec_probe_init
+    trigger: probeAndInitDisplayCodec / probeAudioLink / registerCodecs path succeeds
+  - from: codec_probe_init
+    to: interrupts_running
+    trigger: CORB/RIRB/interrupt start path succeeds
+  - from: interrupts_running
+    to: running
+    trigger: final registration and readiness
+  observed_subsystems:
+  - framebuffer notification registration
+  - gfx matched / terminated notifiers
+  - host interface specialization by Intel/AMD/NVIDIA/MCP family
+  - audio controller reset/setup
+  - CORB/RIRB transport start/stop
+  - unsolicited response handling
+  - display power / clock divider / bandwidth management
+runtime_state_machines:
+  framebuffer_association:
+    states:
+    - none
+    - gfx_matched
+    - sink_claimed
+    - display_attached
+    - display_ready
+    - display_gone
+    inputs:
+    - gfxMatchedHandler
+    - gfxTerminatedHandler
+    - framebufferEventHandler
+    - updateVideoMode
+    - verifySinkDeviceAttached
+  controller_transport:
+    states:
+    - reset
+    - host_interface_setup
+    - corb_started
+    - rirb_started
+    - interrupt_enabled
+    - running
+    - interrupt_disabled
+    - stopped
+    inputs:
+    - resetAudioController
+    - setupAudioController
+    - startCORB
+    - startRIRB
+    - enableControllerInterrupt
+    - disableControllerInterrupt
+    - stopCORB
+    - stopRIRB
+  power:
+    states:
+    - sleep
+    - idle
+    - active
+    - shutdown
+    inputs:
+    - handleSetPowerState
+    - protectedWaitForPowerOn
+    - setGraphicsClockDivider
+    - retriggerAgcPowerdownTimer
+    - retriggerClockStopTimer
+teardown:
+  stop:
+  - Walks notifier/event-source arrays (starting at offsets around 0xf10 and stepping by 0x1a8) and detaches
+    them.
+  - Unregisters global/event callbacks.
+  - Releases retained objects at +0xa0/+0xa8/+0xc0 and invokes virtual stop/unregister routine at 0x798.
+  - Calls superclass/provider stop.
+  free:
+  - Frees controller workloop, event sources, notifier state, retained framebuffers/objects, and transport
+    resources.

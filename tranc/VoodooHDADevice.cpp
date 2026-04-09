@@ -2249,10 +2249,16 @@ int VoodooHDADevice::handleStreamInterrupt(Channel *channel)
 
 	writeData8(channel->off + HDAC_SDSTS, HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE | HDAC_SDSTS_BCIS);
 
-	/* Treat FIFOE/DESE as soft completion so takeTimeStamp() stays synchronised.
-	 * Without this, position tracking in IOAudioEngine drifts and produces
-	 * crackling on controllers that spuriously assert FIFOE (e.g. Raptor Lake). */
-	if (res & (HDAC_SDSTS_BCIS | HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE))
+	/* Apple GFXHDA behavior: only BCIS triggers the completion callback
+	 * ((sdsts & 0x1c) == 4).  AMD/ATI HDA controllers spuriously assert FIFOE
+	 * during normal HDMI playback (SDSTS=0x28); treating FIFOE as a completion
+	 * event calls takeTimeStamp() at wrong times → timing drift → crackling.
+	 * Intel PCH (Raptor Lake) asserts FIFOE without BCIS on ALC897 — keep the
+	 * FIFOE soft-completion path for Intel only. */
+	if (res & HDAC_SDSTS_BCIS)
+		return 1;
+	if ((mDeviceId & 0xffff) == INTEL_VENDORID &&
+	    (res & (HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE)))
 		return 1;
 
 	return 0;

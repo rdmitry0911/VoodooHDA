@@ -1,0 +1,158 @@
+class: AppleGFXHDAWidget
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: codec widget abstraction covering pins/converters/amps with format, connection list, unsolicited tag, and pin configuration logic.
+method_inventory:
+  total_methods: 109
+  lifecycle:
+  - init()
+  - free()
+  power:
+  - supportsPowerControl()
+  - setPowerState(unsigned int, bool)
+  - performPowerRailRestore()
+  - currentPowerLevel()
+  - idlePowerLevel()
+  - maximumPowerLimit()
+  stream_dma_format:
+  - getSampleLatency()
+  - isSampleRateSupported(unsigned int)
+  - validForFormatChanges()
+  - supportedChannelDepth()
+  - formatForBitDepth(unsigned char)
+  - supportsFloatingPointFormat()
+  - maximumSupportedChannelCount()
+  - setFormat(unsigned int, unsigned int, unsigned int, unsigned int)
+  - setFormatPrefix(unsigned int, unsigned int, unsigned int, unsigned int)
+  - setFormatPostfix(unsigned int, unsigned int, unsigned int, unsigned int)
+  - setStreamChannel(unsigned int)
+  - multiStreamCapable()
+  - preDMADelayTime()
+  - modifyFormat(unsigned int)
+  - setConverterChannelCount(unsigned int)
+  - modifyFormatPrefix(unsigned int)
+  - modifyFormatPostfix(unsigned int)
+  - detectSampleRateChange()
+  controls:
+  - isWidgetAmplifierMuteCapable(unsigned int)
+  - setWidgetAmplifierMute(unsigned int, bool)
+  - setWidgetAmplifierMute(unsigned int, bool, unsigned int)
+  - pinSetControl(unsigned char)
+  events_interrupts:
+  - getUnsolicitedTagForDeviceType()
+  - getNonRetaskedUnsolicitedTagForDeviceType()
+  - getUnsolicitedTagForReTaskedPinSense()
+  - setUnsolicited(bool)
+  - setUnsolicited(bool, unsigned int)
+  topology_codec_graph:
+  - ~AppleGFXHDAWidget()
+  - AppleGFXHDAWidget()
+  - logPinFunction()
+  - isWidgetAmplifierGainAdjustable(unsigned int)
+  - setWidgetAmplifierGain(unsigned int, unsigned char)
+  - setWidgetAmplifierTo0dB(unsigned int, unsigned int, unsigned char)
+  - unsolictedCachePinSense()
+  - pinConfigDefault()
+  - setPinConfigDefault(unsigned int)
+  - pinHasPhyscialConnection()
+  - pinDefaultDeviceType()
+  - pinIsConnected()
+  - pinDefaultDeviceTypeSupportedForOutput()
+  - pinDefaultDeviceTypeSupportedForInput()
+  - pinPortConnectivity()
+  - pinLocation()
+  - pinGeometricLocation()
+  - pinPhysicalLocation()
+  - pinConnectionType()
+  - pinMiscellaneous()
+  - pinSequence()
+  - pinColor()
+  - pinDefaultAssociation()
+  - pinIsInput()
+  - configurePinForIO(bool)
+  - nodeIdForConnectionListAtIndex(unsigned int)
+  - nodeIdIsSpdifInputPinComplex(unsigned int)
+  - validateNodeIDConnection(unsigned short)
+  - setConnectionSelectNodeID(unsigned short)
+  - overridePinCapabilities(unsigned int)
+  - getPinCapabilities()
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - logMemberVariables()
+  - isDigital()
+  - disableAudioInfoFrameChecksum()
+  - setIEC60958(unsigned int)
+  - getLinkStripeCountCapability()
+  - getLinkStripeCount()
+  - setLinkStripeCount(unsigned int)
+  - setVRef(unsigned int)
+  - getCharCodeForDefaultDeviceType()
+  - getStringForDefaultDeviceType()
+  - probeConnectionIndex()
+  - setProbeConnectionIndex(unsigned int)
+  - hasConnectionList()
+  - connectionListCount()
+  - inputCapable()
+  - outputCapable()
+  - stereoCapable()
+  - hdmiCapable()
+  - displayPortCapable()
+  - highBitRateCapable()
+  - extendedPacketTypeCapable()
+  - setProcessingState(unsigned int)
+  - setConnectionSelect(unsigned int)
+  - deviceListLength()
+  - setDeviceSelect(unsigned char)
+  - isDelegate()
+  - setIsDelegate(bool)
+  - usesMultiDelegate()
+  - detectAssistantPrepare(unsigned int)
+  - detectAssistantComplete(unsigned int)
+  - hasDetectAssistant()
+  - dispatchDetectAssistantPrepare()
+  - dispatchDetectAssistantComplete()
+  - setMicAttributes(unsigned int)
+  - writeProcessingCoefficient(unsigned int, unsigned int)
+  - writeProcessingCoefficientWithMask(unsigned int, unsigned int, unsigned int)
+  - supportsDisableSlots()
+  - disableSlots()
+  - getNumProcessingCoefficients()
+state_machine:
+  states:
+  - allocated
+  - initialized
+  - configured
+  - operational
+  - power_transition
+  - freed
+  entrypoints:
+  - init()
+  - setFormat(...)
+  - setStreamChannel(unsigned int)
+  - setPowerState(unsigned int, bool)
+  - configurePinForIO(bool)
+  - free()
+  transitions:
+  - widget format/stream/pin programming underlies actual route activation
+  - unsolicited tag and pin-sense helpers feed driver/engine event handling
+callgraph_focus:
+  upstream_dependencies:
+  - controller/function-group discovery path
+  downstream_targets:
+  - engine route selection / stream format / pin control
+  key_observable_fields_or_concepts:
+  - unsolicited
+  - DMA
+  - power
+  - stream
+  - pin
+  - widget
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

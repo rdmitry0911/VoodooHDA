@@ -586,6 +586,7 @@ void VoodooHDAFramebufferNotifier::buildELDFromEDID(FBConnectionState *conn)
 bool VoodooHDAFramebufferNotifier::enableAudioPipe(FBConnectionState *conn)
 {
 	if (!conn->framebuffer) return false;
+	if (conn->audioPipeEnabled) return true;
 
 	/*
 	 * Activate the GPU audio pipe via IOFramebuffer::setAttributeForConnection().

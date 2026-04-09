@@ -1,0 +1,133 @@
+document_type: lifecycle_overview
+scope: AppleGFXHDA kernel driver + AppleGFXHDAHALPlugIn user-space HAL plugin
+confidence: mixed_confirmed_and_inferred
+sources:
+- file: AppleGFXHDA_decompiled.c
+  key_functions:
+  - AppleGFXHDADriver::start
+  - AppleGFXHDADriver::handleAsynchronousStart
+  - AppleGFXHDADriver::startAction
+  - AppleGFXHDADriver::completeStart
+  - AppleGFXHDAController::start
+  - AppleGFXHDAController::startAction
+  - AppleGFXHDAController::probe
+  - AppleGFXHDA38C8Driver::completeStart
+- file: AppleGFXHDAHALPlugIn_decompiled.c
+  key_functions:
+  - _AudioDriverPlugInOpen
+  - _AudioDriverPlugInClose
+  - FUN_000008b4
+  - FUN_000021b6
+  - FUN_000023f4
+  - FUN_0000248e
+  - FUN_00002956
+  - FUN_00002992
+topology:
+  kernel:
+  - AppleGFXHDADriver (IOAudioDevice-like top-level audio device)
+  - AppleGFXHDA38C8Driver and other per-controller driver subclasses
+  - AppleGFXHDAController (HDA controller / framebuffer / codec / interrupt / host-interface manager)
+  - AppleGFXHDAFunctionGroup
+  - AppleGFXHDANode
+  - AppleGFXHDAWidget
+  - AppleGFXHDAPath / AppleGFXHDAPathSet
+  - AppleGFXHDAEngine / AppleGFXHDAEngineOutputDP
+  userspace:
+  - AppleGFXHDAHALPlugIn global plugin registry keyed by device ID
+  - Per-device plugin object
+  - Per-control wrapper objects for IOAudioControl children
+  - Notification source / mach port / dispatch source listener
+cold_boot_sequence:
+- step: 1
+  actor: AppleGFXHDAController::probe
+  effect: Matches the PCI/IOService instance, captures vendor/device identity, sets model-specific defaults,
+    and prepares controller capabilities.
+- step: 2
+  actor: AppleGFXHDAController::start
+  effect: Stores provider and schedules asynchronous start via provider workloop command.
+- step: 3
+  actor: AppleGFXHDAController::startAction
+  effect: Attaches to ancestor IOService context, increments instance count, opens provider, resolves
+    workloop/event sources, and performs controller-side initialization of host interface / codecs / notifications.
+- step: 4
+  actor: AppleGFXHDADriver::start
+  effect: Stores provider, allocates lock/name/work structures, then schedules asynchronous driver start.
+- step: 5
+  actor: AppleGFXHDADriver::handleAsynchronousStart
+  effect: Dispatches startAction onto provider workloop gate.
+- step: 6
+  actor: AppleGFXHDADriver::startAction
+  effect: Requires controller object at +0x138, invokes driver-completeStart, then notifies controller
+    readyToSendFBMsg on success.
+- step: 7
+  actor: AppleGFXHDADriver::completeStart
+  effect: 'Performs the heavy bring-up: power management strings/properties, child/controller/service
+    registration, engine/path/node/widget graph creation, and engine activation.'
+- step: 8
+  actor: AppleGFXHDA38C8Driver::completeStart
+  effect: Vendor-specific completion path ties driver to controller/framebuffer/power and EDID-aware activation
+    rules.
+- step: 9
+  actor: AppleGFXHDAHALPlugIn _AudioDriverPlugInOpen
+  effect: Creates or reuses a per-device userspace plugin instance and registers notification infrastructure.
+- step: 10
+  actor: HAL control enumeration
+  effect: Plugin enumerates IOAudioControl children, wraps them, and mirrors state/properties to CoreAudio.
+steady_state:
+  kernel:
+  - Controller handles unsolicited responses, framebuffer messages, power-state requests, stream start/stop,
+    and codec/interrupt traffic.
+  - Driver arbitrates higher-level audio-engine activation/deactivation and shutdown / terminate paths.
+  - Engines propagate power transitions to PathSets, Paths, Nodes, and Widgets.
+  userspace:
+  - HAL plugin exposes DeviceGetProperty / SetProperty and Stream property callbacks.
+  - Notification source receives mach messages and refreshes control inventory / state.
+shutdown_sequence:
+- 'HAL plugin closes: deregister notification hooks, drop per-device refcount, destroy per-device object
+  when refcount reaches zero.'
+- Kernel driver/controller stop paths detach event sources/notifiers, unregister services, release retained
+  objects, and free work structures.
+- systemWillShutdown / terminate paths quiesce engines and transition power down before final teardown.
+state_machines:
+  driver_startup:
+  - new
+  - provider_bound
+  - async_start_queued
+  - startAction_running
+  - completeStart_running
+  - service_registered
+  - engines_active
+  - running
+  - stopping
+  - freed
+  controller_runtime:
+  - probed
+  - started
+  - host_interface_setup
+  - codecs_registered
+  - fb_notifications_registered
+  - running
+  - power_transition
+  - stopping
+  - terminated
+  engine_power:
+  - sleep(0)
+  - idle(1?)
+  - active(2)
+  - higher_vendor_specific_levels(optional 3/4)
+  hal_plugin_per_device:
+  - absent
+  - lookup
+  - allocated
+  - backend_object_created
+  - control_inventory_built
+  - notification_source_running
+  - open
+  - closing
+  - destroyed
+unknowns:
+- Several virtual function targets are only visible by vtable slot, not symbolic name.
+- Some subclass-specific completeStart/setup steps are vendor-specific and only partially inferable from
+  the decompile.
+- Userspace HAL class names are stripped; object roles are reconstructed from behavior and exported entry
+  points.

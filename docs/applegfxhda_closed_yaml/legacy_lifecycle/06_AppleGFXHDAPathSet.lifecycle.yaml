@@ -1,0 +1,32 @@
+module: AppleGFXHDAPathSet
+role: collection of one or more AppleGFXHDAPath objects that transition power as a unit
+confidence: confirmed
+entrypoints:
+- setPowerState(unsigned int)
+- powerState()
+- sleepPrefixTasks()
+fsm:
+  states:
+  - empty_or_invalid
+  - off(0)
+  - idle(1?)
+  - active(2+)
+  transitions:
+  - from: off(0)
+    to: active(2+)
+    trigger: engine activation
+  - from: active(2+)
+    to: off(0)
+    trigger: engine stop / sleep / idle-down
+  - from: any
+    to: same
+    trigger: cached powerState field updated after successful child propagation
+algorithm:
+- Requires internal path vector at +0x10.
+- If collection empty, returns assertion/error.
+- Fetches path 0, then iterates all remaining paths with pathAtIndex().
+- Invokes AppleGFXHDAPath::setPowerState(path, requested_state) on each.
+- On success, stores requested_state into field +0x18.
+sleep_prefix_tasks:
+- Iterates only path objects of a specific subclass/castable type.
+- Calls AppleGFXHDAPath::sleepPrefixTasks() per eligible path before sleep.

@@ -1,0 +1,28 @@
+scope: Graphics-attached HDA audio on macOS as represented by uploaded decompilations.
+closed_by_component:
+  framebuffer notifications and display lifecycle:
+  - IOGraphicsFamily::IOFramebuffer baseline
+  - AppleIntelFramebuffer::frameBufferNotificationCallback
+  - AppleIntelFramebufferController AGDC stream/EDID helpers
+  graphics/audio association:
+  - AppleGFXHDAController::initializeHDAGfxAssociation
+  - readyToSendFBMsg
+  - framebufferEventHandler
+  - updateVideoMode
+  audio device and power policy:
+  - AppleGFXHDADriver
+  - AppleGFXHDA38C8Driver
+  audio engine runtime:
+  - IOAudioEngine base + AppleGFXHDAEngine/Output/OutputDP subclasses
+  userspace exposure:
+  - AppleGFXHDAHALPlugIn
+not_missing_for_current_scope:
+- Additional AppleHDA kexts are not required to close the AppleGFXHDA path itself.
+- AMD/NVIDIA framebuffer decompiles are not required if the documented closed scope
+  is Intel CFL/KBL-backed graphics audio, with generic controller-side branches retained
+  as AppleGFXHDA class docs.
+out_of_scope_but_related:
+- Non-GFX analog/internal AppleHDA codec stack
+- AudioServerPlugIn host process internals outside this bundle
+- Other GPU vendors beyond classes already present inside AppleGFXHDA and uploaded
+  Intel framebuffer drivers

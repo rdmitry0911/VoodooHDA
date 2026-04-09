@@ -1,0 +1,62 @@
+module: AppleGFXHDAHALPlugIn controls + notification receiver
+role: enumerates IOAudioControl children, wraps them, and reacts to mach-port notifications
+confidence: mostly_confirmed
+control_enumeration:
+  function: FUN_000021b6
+  algorithm:
+  - Requires vector at param_1+0x38.
+  - Iterates IOService children of registry entry param_1+0x10.
+  - Selects only children conforming to IOAudioControl.
+  - Builds wrapper object via FUN_00001aee.
+  - Deduplicates against existing wrapped controls using wrapper compare vfunc +0x20.
+  - 'On new control: binds wrapper to parent context (vfunc +0x18), sets initial mode/flag via vfunc +0x50(param_2),
+    and appends to vector.'
+shared_notification_manager:
+  constructor: FUN_0000327c
+  start: FUN_000033e2 -> FUN_0000353a
+  stop: FUN_000036ee
+  destructor_cleanup: FUN_00003668 / FUN_000032aa
+  fields:
+    '+0x08': mach receive right / port
+    '+0x10': CFMachPort
+    '+0x18': message callback
+    '+0x20': callback context
+    '+0x28': dispatch queue
+    '+0x30': dispatch source (mach_recv)
+    '+0x38': dispatch semaphore for cancellation synchronization
+notification_fsm:
+  states:
+  - not_created
+  - mach_port_allocated
+  - cfmachport_created
+  - dispatch_objects_created
+  - dispatch_source_running
+  - message_received
+  - cancelling
+  - stopped
+  transitions:
+  - from: not_created
+    to: mach_port_allocated
+    trigger: FUN_000033e2 allocates receive right
+  - from: mach_port_allocated
+    to: cfmachport_created
+    trigger: CFMachPortCreateWithPort succeeds
+  - from: cfmachport_created
+    to: dispatch_objects_created
+    trigger: semaphore + queue created
+  - from: dispatch_objects_created
+    to: dispatch_source_running
+    trigger: FUN_0000353a creates mach_recv dispatch source and resumes it
+  - from: dispatch_source_running
+    to: message_received
+    trigger: FUN_000035f8 receives mach message and invokes callback
+  - from: dispatch_source_running
+    to: cancelling
+    trigger: FUN_000036ee cancels source
+  - from: cancelling
+    to: stopped
+    trigger: cancel handler FUN_00003668 runs and signals semaphore
+refresh_logic:
+  FUN_00002956: Locks per-device mutex, refreshes internal state, and re-enumerates controls via FUN_000021b6(param_1,1).
+  FUN_0000248e: Notification callback decodes incoming message, filters for event type 2, and triggers
+    refresh/update work.

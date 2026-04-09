@@ -1,0 +1,57 @@
+class: AppleGFXHDA38C8Driver
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: GPU/display-coupled subclass of AppleGFXHDADriver handling EDID, framebuffer/display notifications, and DP engine activation/deactivation.
+method_inventory:
+  total_methods: 8
+  lifecycle:
+  - completeStart()
+  power:
+  - systemWillShutdown(unsigned int)
+  stream_dma_format: []
+  controls: []
+  events_interrupts: []
+  topology_codec_graph: []
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDA38C8Driver()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDA38C8Driver()
+state_machine:
+  states:
+  - allocated
+  - starting
+  - display_association_pending
+  - display_attached
+  - video_format_pending
+  - active
+  - display_invalidated
+  - shutdown_pending
+  entrypoints:
+  - completeStart()
+  - handleValidEDIDAction(HDAGFXHeadAssociationStruct*)
+  - handleInvalidEDID(HDAGFXHeadAssociationStruct*)
+  - message(unsigned int, IOService*, void*)
+  - systemWillShutdown(unsigned int)
+  transitions:
+  - message(EDID-valid/video-format/etc) schedules gated actions through controller workloop
+  - handleInvalidEDID may remove additional DP audio source or deactivate matching EngineOutputDP
+  - systemWillShutdown clears an internal armed/active flag before superclass shutdown path
+callgraph_focus:
+  upstream_dependencies:
+  - IOService provider
+  - graphics/framebuffer association path
+  downstream_targets:
+  - AppleGFXHDAController
+  - AppleGFXHDAFunctionGroup
+  - AppleGFXHDAEngine / AppleGFXHDAEngineOutputDP
+  key_observable_fields_or_concepts:
+  - EDID
+  - framebuffer
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

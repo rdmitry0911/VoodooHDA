@@ -1,0 +1,167 @@
+class: AppleGFXHDAController
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: hardware-facing HDA controller object managing host interface, CORB/RIRB, codecs, link probing, stream allocation, interrupts, and low-power transitions.
+method_inventory:
+  total_methods: 106
+  lifecycle:
+  - startAction()
+  - terminate(unsigned int)
+  - free()
+  power:
+  - protectedWaitForPowerOn()
+  - retriggerAgcPowerdownTimer()
+  - hardwareSupportsLowPowerMode() const
+  - requestLowPower(bool, bool)
+  - enterLowPowerMode(bool, bool)
+  - forcePMPowerStateToOff(bool)
+  - appleGraphicsControllerPowerState()
+  - setAppleGraphicsControllerPowerState(bool)
+  - setPowerStateGated(unsigned int)
+  - shutdownHDAControllerIfOnGated()
+  - shutdownHDAController()
+  - gfxSetPowerState(unsigned int, bool)
+  - gfxGetPowerState()
+  - systemWillShutdown(unsigned int)
+  - setCodecPowerCapabilities(unsigned short, bool)
+  - registerAfgPowerStateWithController(unsigned int, unsigned int)
+  stream_dma_format:
+  - dmaIsRunning()
+  - probeStreamCapabilities()
+  - setupVariableStreamLatency()
+  - allocateAudioStream()
+  - deallocateLinkStream(unsigned int, int, int, int)
+  - resetStreamForOffset(unsigned int)
+  - stopStreamWithOffset(unsigned int, unsigned int)
+  - handleStreamInterruptOnISR(unsigned int, unsigned long long)
+  - handleStreamInterruptOnWorkLoop(unsigned int)
+  - checkStreamErrorState(unsigned int)
+  - getNumberOfSupportedStream()
+  controls:
+  - ~AppleGFXHDAController()
+  - AppleGFXHDAController()
+  - locateAssociatedGraphicsController()
+  - resetAudioController(bool, bool)
+  - setupAudioController()
+  - controllerSpecificFeatures()
+  - enableControllerInterrupt()
+  - disableControllerInterrupt()
+  - initHDAControllerWorkLoop()
+  - setControllerClockStopState(bool)
+  - stopWaitControllerClock()
+  - logControllerRegisters()
+  - controllerClockStopState()
+  - notifyControllerOfPolling(bool)
+  - tunnelledHDAController()
+  events_interrupts:
+  - readyToSendFBMsg()
+  - setupHostInterrupt()
+  - queueUnsolicitedResponse(unsigned int, unsigned int)
+  topology_codec_graph:
+  - findValidDisplayCodec()
+  - setupIntelHostInterface()
+  - setCodecAddressMask()
+  - probeAndInitDisplayCodec()
+  - integratedCodecAddressIsValid(unsigned int)
+  - setCodecProperties()
+  - registerCodecs(unsigned int)
+  - checkCodecCommandTimeout(unsigned int, bool)
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - pollRegister(int, int, unsigned int, unsigned int)
+  - getCRC8(unsigned char, unsigned char)
+  - setGraphicsClockDivider()
+  - displayIsReady()
+  - displayIsAttached()
+  - shouldSetGraphicsClockDivider()
+  - retriggerClockStopTimer()
+  - setupHostInterface()
+  - setup80862807HostInterface()
+  - setup80861E20HostInterface()
+  - setup80869C20HostInterface()
+  - setupMCP79HostInterface()
+  - setupMCP89HostInterface()
+  - setupGT216HostInterface()
+  - setupAMDHostInterface()
+  - setAlwaysDisplayRouting()
+  - alwaysDisplayRouting()
+  - setHighFIFOLimitSupport()
+  - setRequireMaxBusStall()
+  - enableMaxBusStall()
+  - disableMaxBusStall()
+  - logCorbRirbInfo()
+  - probeAudioLink()
+  - startCORB()
+  - stopCORB(bool)
+  - startRIRB()
+  - stopRIRB(bool)
+  - serviceCORB()
+  - serviceRIRB()
+  - getMultiEQDevicePresence()
+  - setVendorHWDeviceStatus(unsigned int)
+  - getVendorHWDeviceStatus()
+  - getVendorHWDeviceStatusUsbVP()
+  - getVendorHWDeviceStatusUsbCC()
+  - requireTimeStampFiltering() const
+  - getTimeIntervalFilterOrder() const
+  - getWorkLoop() const
+  - probeFIFOCapabilities()
+  - maxCapabilityForDomainState(unsigned long)
+  - getClockDomain()
+  - hardwareSupportsClockStopOperation()
+  - waitForClockStopTimerEvent()
+  - setMaxBusStall(unsigned int)
+  - setEnableMaxBusStall(unsigned int)
+  - getMaxMemoryDescSize(unsigned int)
+  - regAccessReady()
+state_machine:
+  states:
+  - allocated
+  - start_async
+  - host_interface_setup
+  - controller_reset
+  - codec_probe
+  - codec_registered
+  - stream_caps_known
+  - interrupts_enabled
+  - running
+  - low_power_requested
+  - low_power
+  - terminating
+  - freed
+  entrypoints:
+  - start(IOService*)
+  - handleAsynchronousStart(void*)
+  - startAction()
+  - terminate(unsigned int)
+  - free()
+  transitions:
+  - start -> async work item -> startAction on provider gate
+  - startAction performs ancestor discovery/registration and then setupHostInterface/reset/setupAudioController/probeAndInitDisplayCodec/registerCodecs path
+  - stream/interrupt lifecycle governed by startCORB/startRIRB/enableControllerInterrupt and stop* counterparts
+  - requestLowPower/enterLowPowerMode are controller-level low-power transitions used by driver/engines
+callgraph_focus:
+  upstream_dependencies:
+  - IOService provider / PCI controller service
+  - workloop / interrupt gate
+  downstream_targets:
+  - codec registration
+  - IOGFXHDAStream objects
+  - AppleGFXHDADriver
+  key_observable_fields_or_concepts:
+  - unsolicited
+  - CORB
+  - RIRB
+  - DMA
+  - power
+  - stream
+  - pin
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

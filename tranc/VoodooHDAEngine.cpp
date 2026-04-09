@@ -757,6 +757,29 @@ UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 	return (mDevice->channelGetPosition(mChannel) / mSampleSize);
 }
 
+/*
+ * Override eraseOutputSamples to suppress premature buffer zeroing.
+ *
+ * IOAudioEngine::eraseOutputSamples() uses getCurrentSampleFrame() to
+ * decide which frames are "already consumed" and zeros them.  If our
+ * DMA position pointer lags or jumps (wrong BCIS/FIFOE timing, BDL
+ * wrap-around quirks), the engine can zero frames that are still being
+ * played by the codec → audible crackling / glitches.
+ *
+ * Returning kIOReturnSuccess without touching the buffers disables this
+ * erasure entirely.  The mix buffer already holds fresh PCM for the next
+ * render cycle, so skipping the erase is safe.  If the crackling
+ * disappears with this override the root cause is confirmed to be a
+ * position-tracking error in getCurrentSampleFrame() / the BDL/interrupt
+ * path rather than a clipping or format-conversion bug.
+ */
+IOReturn VoodooHDAEngine::eraseOutputSamples(const void * /*mixBuf*/, void * /*sampleBuf*/,
+		UInt32 /*firstSampleFrame*/, UInt32 /*numSampleFrames*/,
+		const IOAudioStreamFormat * /*streamFormat*/, IOAudioStream * /*audioStream*/)
+{
+	return kIOReturnSuccess;
+}
+
 IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 											  const IOAudioStreamFormat *newFormat,
 											  const IOAudioSampleRate *newSampleRate)

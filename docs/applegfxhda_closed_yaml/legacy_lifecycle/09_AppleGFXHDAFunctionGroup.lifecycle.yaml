@@ -1,0 +1,30 @@
+module: AppleGFXHDAFunctionGroup
+role: function-group aggregate object that owns nodes/widgets and propagates power
+confidence: partially_confirmed
+entrypoints:
+- init
+- setPowerState(unsigned int, bool)
+- free
+fsm:
+  states:
+  - constructed
+  - initialized
+  - powered_down
+  - powered_up
+  - freed
+  transitions:
+  - from: constructed
+    to: initialized
+    trigger: init
+  - from: initialized
+    to: powered_up
+    trigger: setPowerState(active, ...)
+  - from: powered_up
+    to: powered_down
+    trigger: setPowerState(off/idle, ...)
+  - from: any
+    to: freed
+    trigger: free
+notes:
+- Vendor-specific subclasses mostly specialize init().
+- Acts as a power/routing aggregation boundary above nodes/widgets.

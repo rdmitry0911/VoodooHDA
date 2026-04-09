@@ -1,0 +1,72 @@
+module: AppleGFXHDAEngine
+role: audio engine core; owns PathSets and DMA start/stop power orchestration
+confidence: mostly_confirmed
+entrypoints:
+- startDMAEngine(bool)
+- stopDMAEngine()
+- stopAudioEngine()
+- setPowerStateToActive(unsigned int)
+- setPowerStateToIdle()
+- setPowerStateToSleep()
+- terminate
+- free
+power_states:
+  '0': sleep/off path propagated to PathSets
+  '1': idle/low-power path (inferred from setPowerStateToIdle naming)
+  '2': active path propagated to PathSets
+  3+: possible vendor-specific or elevated active states
+engine_fsm:
+  states:
+  - allocated
+  - configured
+  - idle
+  - dma_starting
+  - active
+  - idle_transition
+  - sleep_transition
+  - stopping
+  - terminated
+  transitions:
+  - from: allocated
+    to: configured
+    trigger: graph/path configuration complete
+  - from: configured
+    to: idle
+    trigger: driver completeStart finishes but engine not yet actively streaming
+  - from: idle
+    to: dma_starting
+    trigger: startDMAEngine()
+  - from: dma_starting
+    to: active
+    trigger: DMA/programming succeeds and PathSets enter active power
+  - from: active
+    to: idle_transition
+    trigger: setPowerStateToIdle() or stopAudioEngine()
+  - from: idle_transition
+    to: idle
+    trigger: all PathSets accept idle/off transition
+  - from: idle
+    to: sleep_transition
+    trigger: setPowerStateToSleep()
+  - from: sleep_transition
+    to: idle
+    trigger: wakeup path or active restart
+  - from: active
+    to: stopping
+    trigger: stopAudioEngine()/terminate
+  - from: stopping
+    to: terminated
+    trigger: free/teardown
+state_actions:
+  setPowerStateToActive:
+  - Iterates PathSet collection.
+  - Skips redundant transitions if already in desired state.
+  - Calls AppleGFXHDAPathSet::setPowerState(..., 2) on each member.
+  - Caches/records resulting engine state.
+  setPowerStateToIdle:
+  - Iterates PathSets and propagates state 0 or idle-equivalent depending on engine semantics.
+  - Used for non-streaming low-power state.
+  setPowerStateToSleep:
+  - Runs stronger quiesce path than idle; repeatedly forces PathSets off and may run prefix tasks.
+  stopAudioEngine:
+  - Quiesces engine, transitions paths to low/off state, and stops DMA/stream activity.

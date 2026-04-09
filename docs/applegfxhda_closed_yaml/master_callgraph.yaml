@@ -1,0 +1,27 @@
+focus_phases:
+  bootstrap:
+  - AppleGFXHDADriver::start -> handleAsynchronousStart -> startAction -> AppleGFXHDAController::readyToSendFBMsg
+  - AppleGFXHDADriver::completeStart -> constructDictionariesByDiscovery -> createAudioOutputEngineDP
+    -> activateAudioEngines
+  - AppleGFXHDAController::start -> handleAsynchronousStart -> startAction -> setupHostInterface/resetAudioController/setupAudioController
+  graphics_association:
+  - AppleIntelFramebuffer/AGDC emits mode/EDID/stream-association state
+  - AppleGFXHDAController::framebufferEventHandler/processFBMessage/updateVideoMode
+    converts graphics events into audio-side mode/sink state
+  - AppleGFXHDADriver::message and subclass overrides react to valid/invalid EDID
+    and video-format changes
+  engine_runtime:
+  - IOAudioEngine::start -> AppleGFXHDAEngine::initHardware/buildPathSets
+  - AppleGFXHDAEngine::performAudioEngineStart -> startDMAEngine
+  - 'AppleGFXHDAEngineOutputDP runtime loops: handleFBNotification, handleEdidStateTransition_*,
+    performFormatChange, MCCS volume/mute'
+  userspace_hal:
+  - HAL plugin open/property methods talk to IOService/IOAudioControl objects
+  - Kernel-published control values and notifications are mirrored through mach/dispatch
+    event pipeline
+  power_teardown:
+  - AppleGFXHDADriver setPowerState/protectedPowerChange_* dispatches to engines and
+    controller
+  - AppleGFXHDAEngine performAudioEngineStop -> stopDMAEngine
+  - stop/free chains on driver/controller/engine/outputdp and HAL close path release
+    kernel/user resources

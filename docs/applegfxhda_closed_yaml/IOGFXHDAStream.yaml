@@ -1,0 +1,76 @@
+class: IOGFXHDAStream
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: hardware DMA/link stream wrapper storing stream number, format, rate, channel/link settings, and activate/deactivate/start/stop DMA operations.
+method_inventory:
+  total_methods: 34
+  lifecycle: []
+  power: []
+  stream_dma_format:
+  - ~IOGFXHDAStream()
+  - IOGFXHDAStream()
+  - setStreamDirection(unsigned int)
+  - getStreamDirection() const
+  - setDataFormat(unsigned int)
+  - getDataFormat() const
+  - setCASampleFormat(unsigned int)
+  - getCASampleFormat() const
+  - setSampleRate(unsigned int, bool)
+  - getSampleRate() const
+  - setBitsPerSample(unsigned int)
+  - getBitsPerSample() const
+  - setLinkChannelCount(unsigned int)
+  - getLinkChannelCount() const
+  - getStreamNumber() const
+  - getDMABlockSize() const
+  - getDescriptorFormat(unsigned int) const
+  - unregisterStreamInterrupt()
+  - activateStream(unsigned int, unsigned int, bool)
+  - deactivateStream(unsigned int)
+  - startDMAEngine(unsigned int)
+  - stopDMAEngine(unsigned int)
+  - setStreamNumber(int)
+  - clearStreamNumber()
+  - setDMABlockSize(unsigned int)
+  controls:
+  - getControlData() const
+  events_interrupts: []
+  topology_codec_graph: []
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - setSynchronizationGroup(unsigned int)
+  - getSynchronizationGroup() const
+  - getCyclicBufferMemory()
+  - getLinkPositionInBuffer()
+state_machine:
+  states:
+  - allocated
+  - configured
+  - activated
+  - dma_running
+  - dma_stopped
+  - deactivated
+  entrypoints:
+  - activateStream(...)
+  - deactivateStream(unsigned int)
+  - startDMAEngine(unsigned int)
+  - stopDMAEngine(unsigned int)
+  transitions:
+  - Engine and Controller cooperate through this object for stream programming and DMA runtime
+callgraph_focus:
+  upstream_dependencies:
+  - AppleGFXHDAController
+  - AppleGFXHDAEngine
+  downstream_targets:
+  - hardware stream registers / DMA state
+  key_observable_fields_or_concepts:
+  - DMA
+  - stream
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

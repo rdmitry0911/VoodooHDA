@@ -1,0 +1,22 @@
+package: applegfxhda_closed_yaml
+goal: Closed documentation set for AppleGFXHDA stack using uploaded decompilations
+  only.
+closure_definition:
+  kernel_audio_service: AppleGFXHDA_decompiled.c
+  kernel_audio_base: IOAudioFamily_decompiled.c
+  kernel_graphics_base: IOGraphicsFamily_development_decompiled.c
+  matched_graphics_providers:
+  - AppleIntelCFLGraphicsFramebuffer_decompiled.c
+  - AppleIntelKBLGraphicsFramebuffer_decompiled.c
+  userspace_hal: AppleGFXHDAHALPlugIn_decompiled.c
+closed_loops:
+- graphics framebuffer / AGDC stream-association / EDID / display-mode change -> AppleGFXHDAController
+  framebufferEventHandler/processFBMessage
+- AppleGFXHDADriver start -> AppleGFXHDAController readyToSendFBMsg -> completeStart
+  -> constructDictionariesByDiscovery -> activateAudioEngines
+- IOAudioEngine base lifecycle -> AppleGFXHDAEngine subclass start/stop/DMA/control
+  paths
+- HAL plugin open/property/notification loops -> kernel IOService/IOAudioControl exposure
+remaining_uncertainty_policy: Where the decompiler preserves symbol names only partially
+  or leaves vtable slots anonymous, transitions are marked inferred_but_grounded,
+  never invented.

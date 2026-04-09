@@ -1,0 +1,114 @@
+class: AppleGFXHDAPathSet
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: collection of alternative or grouped HDA paths representing one routing candidate / device type published by an engine.
+method_inventory:
+  total_methods: 68
+  lifecycle:
+  - free()
+  power:
+  - setPowerState(unsigned int)
+  - powerState()
+  - sleepPrefixTasks()
+  - currentPowerLevel()
+  - idlePowerLevel()
+  - maximumPowerLimit()
+  - setProviderPowerState(unsigned int)
+  stream_dma_format:
+  - formatForBitDepth(unsigned char)
+  - shouldPublishVolumeForSpatialChannel(unsigned int)
+  - shouldPublishMuteForSpatialChannel(unsigned int)
+  - respondsToSpatialChannel(unsigned int, unsigned int)
+  - getLinkChannelCount()
+  - getCoreAudioChannelCount()
+  - getCoreAudioChannelCount(unsigned int)
+  - isAudioStreamSupported(unsigned int, unsigned int, unsigned int)
+  - getActivePathPreDMADelayTime()
+  - getSampleLatency()
+  - setPublishMaxChannels(bool)
+  - getPublishMaxChannels()
+  controls:
+  - isAmplifierMuteCapable(unsigned int)
+  - setWidgetAmplifierMute(bool, unsigned int)
+  - getPathControlCount()
+  - requiresSoftwareVolume()
+  events_interrupts:
+  - getNonRetaskedUnsolicitedTagForDeviceType()
+  - setMessageLoggingMode(unsigned int)
+  - getUnsolicitedTagForDeviceType()
+  topology_codec_graph:
+  - ~AppleGFXHDAPathSet()
+  - AppleGFXHDAPathSet()
+  - pinDefaultDeviceType()
+  - isInputPathSet()
+  - getArrayOfConverterNodeIDValues()
+  - pathAtIndex(unsigned int) const
+  - pinConnectionType()
+  - getPrimaryPath()
+  - numPaths()
+  - isPinDigital()
+  - pinConfigDefault()
+  - pinDefaultAssociation()
+  - pinDefaultDeviceTypeSupportedForOutput()
+  - pinDefaultDeviceTypeSupportedForInput()
+  - supportsWidgetWithTypeAndNodeID(unsigned int, unsigned int)
+  - pinSequence()
+  - pinPhysicalLocation()
+  - pinNodeID()
+  - setWidgetAmplifierGain(unsigned char, unsigned int)
+  - setWidgetAmplifierBoost(unsigned char)
+  - setWidgetAmplifierBoostDefault()
+  - setWidgetAmplifierTo0dB(unsigned char, unsigned int)
+  misc:
+  - MetaClass::MetaClass()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - convertersNeedSync()
+  - syncConverters(bool)
+  - isEnabled()
+  - disable()
+  - isAmplifierGainAdjustable(unsigned int)
+  - spdifInIsLocked()
+  - isJackConnected()
+  - getCharCodeForDefaultDeviceType() const
+  - usageType()
+  - isConverterDigital()
+  - getStringForDefaultDeviceType()
+  - getLinkStripeCountCapability()
+  - getLinkStripeCount()
+  - setLinkStripeCount(unsigned int)
+  - setSpeakerConfiguration(unsigned int)
+state_machine:
+  states:
+  - allocated
+  - topology_known
+  - enabled
+  - disabled
+  - power_redirected
+  - freed
+  entrypoints:
+  - disable()
+  - setPowerState(unsigned int)
+  - free()
+  transitions:
+  - PathSet power and control publication aggregate over member AppleGFXHDAPath objects
+  - selection / priority queries determine active path set per engine
+callgraph_focus:
+  upstream_dependencies:
+  - controller/function-group discovery path
+  downstream_targets:
+  - engine route selection / stream format / pin control
+  key_observable_fields_or_concepts:
+  - unsolicited
+  - PathSet
+  - DMA
+  - power
+  - stream
+  - pin
+  - widget
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.

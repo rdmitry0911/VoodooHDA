@@ -1,0 +1,51 @@
+class: AppleGFXHDAFunctionGroup_8086280F
+basis:
+  source_file: AppleGFXHDA_decompiled.c
+  parsing: comment-header method extraction from decompiled file
+  confidence: 'mixed: methods confirmed, state/transition normalization partly inferred'
+summary: Intel 8086:280F function-group policy subclass.
+method_inventory:
+  total_methods: 16
+  lifecycle:
+  - init()
+  power:
+  - codecGfxPowerControl()
+  - codecGfxPowerIsOn()
+  - performPowerRailRestore()
+  - idlePowerLevel()
+  stream_dma_format: []
+  controls: []
+  events_interrupts: []
+  topology_codec_graph:
+  - applyCodecSpecificHardwareInitialization()
+  - pathMapCanBeConstructedByDiscovery()
+  - codecRequiresPolling()
+  - unsolictedCachePinSense()
+  misc:
+  - MetaClass::MetaClass()
+  - ~AppleGFXHDAFunctionGroup_8086280F()
+  - getMetaClass() const
+  - MetaClass::alloc() const
+  - operator new(unsigned long)
+  - AppleGFXHDAFunctionGroup_8086280F()
+  - sinkDeviceAttached(unsigned char)
+state_machine:
+  states:
+  - allocated
+  - operational
+  - terminating_or_power_transition
+  - freed
+  entrypoints:
+  - init()
+  transitions:
+  - See method_inventory buckets; explicit transition edges are limited by decompiler naming coverage.
+callgraph_focus:
+  upstream_dependencies: []
+  downstream_targets: []
+  key_observable_fields_or_concepts:
+  - power
+  - pin
+  - codec
+notes:
+- MetaClass/constructor/destructor/operator methods retained in method inventory count but omitted from most narrative unless behaviorally relevant.
+- Where only subclass overrides are visible, inherit generic lifecycle from parent class document.
