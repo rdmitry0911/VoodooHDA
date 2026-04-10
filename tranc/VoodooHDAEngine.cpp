@@ -751,8 +751,13 @@ IOReturn VoodooHDAEngine::performAudioEngineStart()
 //	logMsg("VoodooHDAEngine[%p]::performAudioEngineStart\n", this);
 
 //	logMsg("calling channelStart() for channel %d\n", getEngineId());
-	takeTimeStamp(false);
+	// Start DMA first, then anchor the clock — mirrors AppleGFXHDAEngine::performAudioEngineStart.
+	// channelStart() includes streamReset (up to ~10ms) + CORB/RIRB verb exchanges before the
+	// RUN bit is set.  Anchoring fLastLoopTime *before* DMA starts makes the first loop period
+	// appear longer than it is; at the first BCIS the loop-count increment causes a timing
+	// discontinuity → crackle.
 	mDevice->channelStart(mChannel);
+	takeTimeStamp(false);
 
 	return kIOReturnSuccess;
 }
