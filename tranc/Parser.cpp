@@ -254,9 +254,12 @@ void VoodooHDADevice::probeFunction(Codec *codec, nid_t nid)
 //	dumpMsg("HP switch init...\n");
 //	switchInit(funcGroup);  //Slice - move below
 
-	if ((funcGroup->audio.quirks & HDA_QUIRK_DMAPOS) && !mDmaPosMemAllocated) {
-		errorMsg("XXX\nXXX dma pos quirk untested\nXXX\n");
-		mDmaPosMem = allocateDmaMemory((mInStreamsSup + mOutStreamsSup + mBiStreamsSup) * 8, "dmaPosMem", 0 /* kIOMapInhibitCache */);
+	/* Always enable DMA Position Buffer — standard HDA spec, used by Apple GFXHDA.
+	 * Provides accurate stream position without SDLPIB FIFO lag, which is required
+	 * for eraseOutputSamples to safely zero consumed frames without touching
+	 * frames still in the DMA FIFO. */
+	if (!mDmaPosMemAllocated) {
+		mDmaPosMem = allocateDmaMemory((mInStreamsSup + mOutStreamsSup + mBiStreamsSup) * 8, "dmaPosMem", kIOMapInhibitCache);
 		if (!mDmaPosMem)
 			errorMsg("error: failed to allocate DMA pos buffer (non-fatal)\n");
 		else

@@ -2788,6 +2788,10 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 
 	streamStop(channel);
 	streamReset(channel);
+	/* Zero the DMA sample buffer before each playback session so that wrap-around
+	 * never replays stale audio from a prior clip (old data → elongation + crackling). */
+	if (channel->buffer)
+		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
 	bdlSetup(channel);
 	streamSetId(channel);
 	streamSetup(channel);
