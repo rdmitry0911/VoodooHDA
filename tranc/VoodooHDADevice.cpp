@@ -2680,7 +2680,12 @@ Channel *VoodooHDADevice::channelInit(PcmDevice *pcmDevice, int direction)
 		channel->pcmRates[0] = 48000;
 		channel->pcmRates[1] = 0;
 	}
-	if (mDmaPosMem)
+	/* AMD/ATI GPU HDA controllers (vendor 0x1002) must use SDLPIB for position,
+	 * mirroring Apple's IOGFXHDAStream::getLinkPositionInBuffer() which reads
+	 * SDLPIB directly — NOT the DMA Position Buffer.  Enabling DMAPOS on AMD
+	 * GPU HDA produces unreliable values that corrupt eraseOutputSamples
+	 * decisions and cause high-frequency aliasing. */
+	if (mDmaPosMem && (mDeviceId & 0xffff) != ATI_VENDORID)
 		channel->dmaPos = (UInt32 *) (mDmaPosMem->virtAddr + (mStreamCount * 8));
 	else
 		channel->dmaPos = NULL;

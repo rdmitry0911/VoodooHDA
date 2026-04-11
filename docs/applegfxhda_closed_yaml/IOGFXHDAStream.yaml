@@ -46,7 +46,12 @@ method_inventory:
   - setSynchronizationGroup(unsigned int)
   - getSynchronizationGroup() const
   - getCyclicBufferMemory()
-  - getLinkPositionInBuffer()
+  - getLinkPositionInBuffer()  # ← KEY: reads SDLPIB (Link Position In Buffer register),
+                               #   NOT the DMA Position Buffer.  Called by
+                               #   AppleGFXHDAEngine::getCurrentSampleFrame() via vtable+0x1d0.
+                               #   Apple always uses LPIB for stream position on AMD/ATI GPU HDA;
+                               #   DMAPOS is unreliable on these controllers.
+  - registerStreamInterrupt(void*, func, void*, unsigned int)
 state_machine:
   states:
   - allocated

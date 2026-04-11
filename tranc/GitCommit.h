@@ -1,1 +1,1 @@
-#define VOODOO_HDA_GIT_COMMIT "f1d70fb"
+#define VOODOO_HDA_GIT_COMMIT "20d170a"

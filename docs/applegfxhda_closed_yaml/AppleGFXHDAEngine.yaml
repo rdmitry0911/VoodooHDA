@@ -25,7 +25,10 @@ method_inventory:
   - destroyVirtualInputStreamEnableToggleControl()
   - startDMAEngine(bool)
   - stopDMAEngine(bool)
-  - getCurrentSampleFrame()
+  - getCurrentSampleFrame()   # calls IOGFXHDAStream::getLinkPositionInBuffer() via vtable+0x1d0;
+                              # divides byte position by (channels*bytesPerSample) to get frame index;
+                              # clamps to [0, numSampleFramesPerBuffer) — returns 0 if out of range.
+                              # Position source is SDLPIB (Link Position In Buffer), NOT DMAPOS.
   - allocateVirtualStreamMemory()
   - translateCoreChannelIDtoHDAChannelID(unsigned int)
   - createVirtualInputStreamEnableToggleControl()
