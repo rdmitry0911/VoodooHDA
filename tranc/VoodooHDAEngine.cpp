@@ -803,7 +803,10 @@ void VoodooHDAEngine::recalculateSampleOffsets(UInt32 sampleRate)
 
 UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 {
-	return (mDevice->channelGetPosition(mChannel) / mSampleSize);
+	/* AppleGFXHDAEngine::getCurrentSampleFrame clamps to [0, numSampleFrames):
+	 * if frame >= numSampleFrames it returns 0, guarding against SDLPIB glitches. */
+	UInt32 frame = mDevice->channelGetPosition(mChannel) / mSampleSize;
+	return (frame < mNumSampleFrames) ? frame : 0;
 }
 
 

@@ -2243,8 +2243,13 @@ int VoodooHDADevice::handleStreamInterrupt(Channel *channel)
 	/* XXX to be removed */
 	res = readData8(channel->off + HDAC_SDSTS);
 
-	if (res & (HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE))
-		errorMsg("PCMDIR_%s FIFO/Desc error SDSTS=0x%02lx\n",
+	/* AMD/ATI GPU HDA spuriously asserts FIFOE during normal HDMI playback;
+	 * only log descriptor errors (DESE) for AMD, log both for Intel. */
+	if (res & HDAC_SDSTS_DESE)
+		errorMsg("PCMDIR_%s DESC error SDSTS=0x%02lx\n",
+				(channel->direction == PCMDIR_PLAY) ? "PLAY" : "REC", (long unsigned int)res);
+	else if ((res & HDAC_SDSTS_FIFOE) && (mDeviceId & 0xffff) != ATI_VENDORID)
+		errorMsg("PCMDIR_%s FIFO error SDSTS=0x%02lx\n",
 				(channel->direction == PCMDIR_PLAY) ? "PLAY" : "REC", (long unsigned int)res);
 
 	writeData8(channel->off + HDAC_SDSTS, HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE | HDAC_SDSTS_BCIS);
@@ -2767,6 +2772,12 @@ void VoodooHDADevice::channelStop(Channel *channel, const bool shouldLock)
 
 	streamStop(channel);
 
+	/* Zero the DMA buffer after stopping so no stale audio leaks into the
+	 * next session.  This mirrors the bzero in channelStart and ensures the
+	 * buffer is clean even if the next start arrives without a full reset. */
+	if (channel->buffer)
+		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
+
 	for (int i = 0; channel->io[i] != -1; i++) {
 		Widget *widget = widgetGet(channel->funcGroup, channel->io[i]);
 		if (!widget)
@@ -2793,6 +2804,17 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 
 	streamStop(channel);
 	streamReset(channel);
+
+	/* Verify SDLPIB is zero after stream reset.  AMD GPU HDA controllers
+	 * sometimes leave a stale position → IOAudioEngine writes/erases at the
+	 * wrong offset → "sound starts from the middle" / residual sounds. */
+	{
+		UInt32 posAfterReset = readData32(channel->off + HDAC_SDLPIB);
+		if (posAfterReset != 0)
+			IOLog("VoodooHDA WARN: SDLPIB=0x%x after streamReset (stream off=0x%x), expected 0\n",
+			      posAfterReset, channel->off);
+	}
+
 	/* Zero the DMA sample buffer before each playback session so that wrap-around
 	 * never replays stale audio from a prior clip (old data → elongation + crackling). */
 	if (channel->buffer)
@@ -3371,7 +3393,12 @@ void VoodooHDADevice::bdlSetup(Channel *channel)
 		bdlEntry->addrl = (UInt32) addr;
 		bdlEntry->addrh = (UInt32) (addr >> 32);
 		bdlEntry->len = ((n == numBlocks) ? (blockSize - channel->slack) : blockSize);
-		bdlEntry->ioc = (n == numBlocks);
+		/* AppleGFXHDA sets IOC on every BDL entry so that BCIS fires once per
+		 * block, giving frequent takeTimeStamp() calls for accurate timing.
+		 * Previously IOC was only on the last entry → 1 interrupt per full
+		 * buffer cycle (≈1.36 s at 48 kHz stereo 16-bit with 64×4 KB blocks),
+		 * causing severe clock drift, erase-head lag, and crackling. */
+		bdlEntry->ioc = 1;
 		addr += bdlEntry->len;
 	}
 
