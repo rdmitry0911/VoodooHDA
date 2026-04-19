@@ -3461,13 +3461,9 @@ void VoodooHDADevice::bdlSetup(Channel *channel)
 		bdlEntry->addrl = (UInt32) addr;
 		bdlEntry->addrh = (UInt32) (addr >> 32);
 		bdlEntry->len = ((n == numBlocks) ? (blockSize - channel->slack) : blockSize);
-		/* AppleGFXHDA marks IOC only on the final BDL entry, but VoodooHDA's
-		 * IOAudioEngine timing still advances from BCIS callbacks.  With an
-		 * Apple-sized HDMI ring this makes short files stall until the first
-		 * full-buffer wrap, matching the observed ~0.5 s silence on 1-second
-		 * clips.  Keep page-sized BDL entries, but request BCIS per page for
-		 * HDMI/DP so the engine sees regular progress. */
-		bdlEntry->ioc = (channel->pcmDevice && channel->pcmDevice->digital >= 2) ? 1 : (n == numBlocks);
+		/* After moving HDMI timing to SDLPIB polling, digital streams can use
+		 * the same final-entry IOC cadence as AppleGFXHDA. */
+		bdlEntry->ioc = (n == numBlocks);
 		addr += bdlEntry->len;
 	}
 
