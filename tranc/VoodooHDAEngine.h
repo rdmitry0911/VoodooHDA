@@ -86,6 +86,7 @@ public:
 
 	void recalculateSampleOffsets(UInt32 sampleRate);
 	bool usesDigitalTimingPoll();
+	bool hasActiveDigitalTimingPoll();
 	void armDigitalTimingPoll();
 	void disarmDigitalTimingPoll();
 	bool pollDigitalTimingProgress();

@@ -2371,7 +2371,7 @@ void VoodooHDADevice::timeoutOccurred(OSObject *owner, IOTimerEventSource *sourc
 	if (engineIter) {
 		engineIter->reset();
 		while ((engine = OSDynamicCast(VoodooHDAEngine, engineIter->getNextObject()))) {
-			if (!engine->usesDigitalTimingPoll())
+			if (!engine->hasActiveDigitalTimingPoll())
 				continue;
 			activeDigitalPoll = true;
 			engine->pollDigitalTimingProgress();

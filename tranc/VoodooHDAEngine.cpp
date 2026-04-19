@@ -813,6 +813,11 @@ bool VoodooHDAEngine::usesDigitalTimingPoll()
 	       getEngineDirection() == kIOAudioStreamDirectionOutput;
 }
 
+bool VoodooHDAEngine::hasActiveDigitalTimingPoll()
+{
+	return usesDigitalTimingPoll() && mDigitalTimingPollActive;
+}
+
 void VoodooHDAEngine::armDigitalTimingPoll()
 {
 	if (!usesDigitalTimingPoll())
