@@ -70,6 +70,7 @@ typedef struct _sliderTab{
 
 class VoodooHDAEngine;
 class VoodooHDAFramebufferNotifier;
+class VoodooGFXHDAController;
 
 class IOPCIDevice;
 class IOFilterInterruptEventSource;
@@ -431,6 +432,7 @@ public:
 
 	/* Framebuffer notifier for AMD HDMI audio */
 	VoodooHDAFramebufferNotifier *mFBNotifier;
+	VoodooGFXHDAController *mGFXController;
 
 	/* Dynamic HDMI engine management */
 	struct HDMIEngineSlot {

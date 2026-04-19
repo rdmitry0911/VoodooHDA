@@ -3,6 +3,7 @@
 #include "GitCommit.h"
 #include "VoodooHDADevice.h"
 #include "VoodooHDAFramebufferNotifier.h"
+#include "VoodooGFXHDA.h"
 #include "VoodooHDAEngine.h"
 #include "Tables.h"
 #include "Models.h"
@@ -59,6 +60,7 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	extern kmod_info_t kmod_info;
 	mVerbose = 0;
 	mFBNotifier = NULL;
+	mGFXController = NULL;
 	mNumHDMIEngines = 0;
 	bzero(mHDMIEngines, sizeof(mHDMIEngines));
 	IOLog("VoodooHDA DBG: init() called, dict=%p\n", dict);
@@ -689,6 +691,13 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 		errorMsg("error: no PCM channels found\n");
 		goto done;
 	}
+	if (!mGFXController) {
+		mGFXController = new VoodooGFXHDAController;
+		if (!mGFXController || !mGFXController->init(this)) {
+			errorMsg("error: couldn't initialize VoodooGFXHDAController\n");
+			goto done;
+		}
+	}
 
 	for (int n = 0; n < mNumChannels; n++) {
 		if (!createAudioEngine(&mChannels[n])) {
@@ -823,6 +832,10 @@ void VoodooHDADevice::free()
 	FREE_DMA_MEMORY(mDmaPosMem);
 	FREE_DMA_MEMORY(mCorbMem);
 	FREE_DMA_MEMORY(mRirbMem);
+	if (mGFXController) {
+		delete mGFXController;
+		mGFXController = NULL;
+	}
 
 	if (mNumChannels) {
 		ASSERT(mChannels);
@@ -1699,31 +1712,8 @@ void VoodooHDADevice::scheduleDigitalHDMIPoll()
 
 void VoodooHDADevice::updateDigitalHDMITiming(Channel *channel, bool active, bool primeNow)
 {
-	int channelId;
-	VoodooHDAEngine *engine;
-
-	if (!channel || !channel->pcmDevice || channel->pcmDevice->digital < 2 ||
-	    channel->direction != PCMDIR_PLAY)
-		return;
-
-	channelId = (channel->direction == PCMDIR_PLAY) ? channel->pcmDevice->playChanId :
-	            channel->pcmDevice->recChanId;
-	engine = lookupEngine(channelId);
-	if (!engine)
-		return;
-
-	if (!active) {
-		engine->disarmDigitalTimingPoll();
-		return;
-	}
-
-	engine->armDigitalTimingPoll();
-
-	/* The digital stream now follows a controller-owned lifecycle:
-	 * after RUN is asserted, immediately seed the first timestamp from
-	 * the SDLPIB path instead of the generic engine start callback. */
-	if (primeNow)
-		engine->pollDigitalTimingProgress();
+	if (mGFXController)
+		mGFXController->updateTiming(channel, active, primeNow);
 }
 
 /******************************************************************************************/
@@ -2966,37 +2956,11 @@ int VoodooHDADevice::channelGetPosition(Channel *channel)
 
 UInt32 VoodooHDADevice::channelGetLinkPosition(Channel *channel, bool *valid)
 {
-	UInt32 position = 0;
-	UInt32 bufferBytes;
-
+	if (mGFXController)
+		return mGFXController->getLinkPosition(channel, valid);
 	if (valid)
 		*valid = false;
-	if (!channel)
-		return 0;
-
-	bufferBytes = channel->blockSize * channel->numBlocks - channel->slack;
-	if (bufferBytes == 0)
-		return 0;
-
-	LOCK();
-
-	/* AppleGFXHDA treats the stream link position as its own source of truth.
-	 * Keep the HDMI/DP poll path off the legacy generic modulo/alignment logic:
-	 * read raw SDLPIB on AMD GPU HDA, otherwise fall back to the DMA position
-	 * buffer when it is actually in use. */
-	if (channel->dmaPos && !(channel->pcmDevice && channel->pcmDevice->digital >= 2))
-		position = *(channel->dmaPos);
-	else
-		position = readData32(channel->off + HDAC_SDLPIB);
-
-	UNLOCK();
-
-	if (position >= bufferBytes)
-		return 0;
-	if (valid)
-		*valid = true;
-
-	return position;
+	return 0;
 }
 
 static
@@ -3171,267 +3135,8 @@ void VoodooHDADevice::streamSetup(Channel *channel)
 
 void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, AudioAssoc *assoc, int totalchn, int totalext)
 {
-  FunctionGroup* funcGroup = channel->funcGroup;
-	UInt8 csum;
-	UInt16 AudioInfopacketBufferSize = 0xFFFFU;
-	nid_t cad = funcGroup->codec->cad;
-	nid_t nid_pin;
-	Widget *widget_pin;
-	bool atiCodec = isAtiHdmiCodec(funcGroup->codec);
-	IOLog("VoodooHDA HDMI: streamSetup dac=%d ati=%d totalchn=%d totalext=%d codec=0x%04x:0x%04x\n",
-		  dac, atiCodec, totalchn, totalext, funcGroup->codec->vendorId, funcGroup->codec->deviceId);
-
-  /* Mapping formats to HDMI channel allocations. */
-  const static UInt8 hdmica[2][8] =
-  /*  1     2     3     4     5     6     7     8  */
-  {{ 0x02, 0x00, 0x04, 0x08, 0x0a, 0x0e, 0x12, 0x12 }, /* x.0 */
-   { 0x01, 0x03, 0x01, 0x03, 0x09, 0x0b, 0x0f, 0x13 }}; /* x.1 */
-  /* Mapping formats to HDMI channels order. */
-  const static UInt32 hdmich[2][8] =
-  /*  1  /  5     2  /  6     3  /  7     4  /  8  */
-  {{ 0xFFFF0F00, 0xFFFFFF10, 0xFFF2FF10, 0xFF32FF10,
-     0xFF324F10, 0xF5324F10, 0x54326F10, 0x54326F10 }, /* x.0 */
-   { 0xFFFFF000, 0xFFFF0100, 0xFFFFF210, 0xFFFF2310,
-     0xFF32F410, 0xFF324510, 0xF6324510, 0x76325410 }}; /* x.1 */
-
-
-	for (int j = 0; j < 16; j++) {
-		if (assoc->dacs[j] != dac)
-			continue;
-		nid_pin = assoc->pins[j];
-		widget_pin = widgetGet(funcGroup, nid_pin);
-		if (!widget_pin)
-			continue;
-		if (!HDA_PARAM_PIN_CAP_DP(widget_pin->pin.cap) &&
-			!HDA_PARAM_PIN_CAP_HDMI(widget_pin->pin.cap))
-			continue;
-
-		/*
-		 * The default mapping is 0x00, 0x11, 0x32, 0x23, 0x44, 0x55, 0x66, 0x77
-		 *   PC channel layout is
-		 *   ch 0 - FL, ch 1 - FR, ch 2 - FC, ch 3 - LFE, ch 4 - RL, ch 5 - RR, ch 6 - SL,  ch 7 - SR
-		 *   HDMI ASP channel layout is
-		 *   ch 1 - FL, ch 2 - FR, ch 3 - LFE, ch 4 - FC, ch 5 - RL, ch 6 - RR, ch 7 - RLC, ch 8 - RRC
-		 */
-
-		/*
-		 * Ensure GPU audio pipe is enabled and re-read ELD at stream start.
-		 * GPU driver may have programmed ELD after our initial read at boot.
-		 */
-		if (atiCodec && mFBNotifier)
-			mFBNotifier->ensureAudioPipeEnabled(cad, nid_pin);
-
-		IOLog("VoodooHDA HDMI: streamSetup nid_pin=%d dac=%d eld_len=%d (before re-read) pinCap=0x%08x\n",
-			  nid_pin, dac, widget_pin->eld_len, (unsigned)widget_pin->pin.cap);
-		hdaa_eld_handler(widget_pin);
-		IOLog("VoodooHDA HDMI: streamSetup nid_pin=%d eld_len=%d (after re-read)\n",
-			  nid_pin, widget_pin->eld_len);
-
-		/*
-		 * Determine which path to use:
-		 *  - If standard DIP_SIZE works → use standard HDA path (chan_slot + infoframe)
-		 *  - Else if ATI codec → use ATI verbs (multichannel + channel_allocation)
-		 *
-		 * On macOS, Apple GPU drivers often program standard HDA ELD even for ATI codecs,
-		 * so we try standard first. This is critical for DP→HDMI adapters.
-		 */
-		UInt32 dipSizeTest = sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid_pin, 0x00), cad);
-		bool useStandardPath = (dipSizeTest != HDA_INVALID) && ((dipSizeTest & 0xff) > 0);
-
-		IOLog("VoodooHDA HDMI: streamSetup nid_pin=%d DIP_SIZE(0x00)=0x%08x -> useStandard=%d ati=%d\n",
-			  nid_pin, (unsigned)dipSizeTest, useStandardPath, atiCodec);
-
-		if (atiCodec && !useStandardPath) {
-			/*
-			 * ATI/AMD HDMI channel mapping via vendor-specific verbs.
-			 * Used when standard HDA DIP infoframe is not available.
-			 */
-			int ca = hdmica[totalext == 0 ? 0 : 1][totalchn - 1];
-			IOLog("VoodooHDA HDMI: ATI verb path nid_pin=%d ca=0x%02x totalchn=%d\n",
-				  nid_pin, ca, totalchn);
-
-			/* Set multichannel slots using ATI paired-mode verbs.
-			 * Format (matching AppleGFXHDA): data = (base_slot << 4) | enable_bit
-			 * enable_bit = 1 if this channel pair is active, 0 if not. */
-			static const UInt16 ati_paired_verbs[4] = {
-				ATI_VERB_SET_MULTICHANNEL_01,
-				ATI_VERB_SET_MULTICHANNEL_23,
-				ATI_VERB_SET_MULTICHANNEL_45,
-				ATI_VERB_SET_MULTICHANNEL_67
-			};
-
-			for (int k = 0; k < 4; k++) {
-				int base_slot = k * 2;
-				int enable = (base_slot < totalchn) ? 1 : 0;
-				UInt32 val = (base_slot << 4) | enable;
-				sendCommand(ATI_CMD_12BIT(cad, nid_pin, ati_paired_verbs[k], val), cad);
-				IOLog("VoodooHDA HDMI: ATI MC%d%d=0x%02x\n", base_slot, base_slot+1, val);
-			}
-
-			sendCommand(ATI_CMD_12BIT(cad, nid_pin, ATI_VERB_SET_CHANNEL_ALLOCATION, ca), cad);
-			IOLog("VoodooHDA HDMI: ATI CA=0x%02x pinCtrl=0x%02x\n", ca, widget_pin->pin.ctrl);
-
-			if (HDA_PARAM_PIN_CAP_HDMI(widget_pin->pin.cap) &&
-				HDA_PARAM_PIN_CAP_HBR(widget_pin->pin.cap)) {
-				UInt32 hbr = ((channel->format & AFMT_AC3) && (totalchn == 8)) ? ATI_HBR_ENABLE : 0;
-				sendCommand(ATI_CMD_12BIT(cad, nid_pin, ATI_VERB_SET_HBR_CONTROL, hbr), cad);
-			}
-
-			logMsg("ATI HDMI verb path: nid=%d ca=0x%02x totalchn=%d\n", nid_pin, ca, totalchn);
-
-			/*
-			 * Ensure pin OUT is enabled.  AppleGFXHDA always sends
-			 * SET_PIN_WIDGET_CTRL via Path::enable.  ATI pin caps may
-			 * not report HDMI/HBR bits, so the standard HBR block
-			 * (below) never fires — we must do it explicitly.
-			 */
-			widget_pin->pin.ctrl |= 0x40; /* OUT_ENABLE */
-			sendCommand(HDA_CMD_SET_PIN_WIDGET_CTRL(cad, nid_pin, widget_pin->pin.ctrl), cad);
-
-			/*
-			 * AppleGFXHDA always sends standard HDA channel slots (0x734) and
-			 * enables DIP transmission (0x732=0xc0) even on ATI codecs with
-			 * DIP_SIZE=0.  Without DIP_XMIT the monitor never sees the Audio
-			 * InfoFrame and won't decode audio.
-			 */
-			for (int k = 0; k < 8; k++) {
-				UInt16 slotVerb;
-				if (k < totalchn) {
-					slotVerb = (((hdmich[totalext == 0 ? 0 : 1][totalchn - 1] >> (k * 4)) & 0xf) << 4) | k;
-				} else {
-					slotVerb = 0xf0 | k;  /* unused slot: slot=0xf, channel=k */
-				}
-				sendCommand(HDA_CMD_SET_HDMI_CHAN_SLOT(cad, nid_pin, slotVerb), cad);
-			}
-
-			/*
-			 * Write Audio InfoFrame via DIP verbs even with DIP_SIZE=0.
-			 * ATI codecs may still accept DIP_DATA writes; without the
-			 * InfoFrame content the monitor sees an empty packet and
-			 * won't decode audio.  Matches standard HDA path (lines below).
-			 */
-			{
-				int ca = hdmica[totalext == 0 ? 0 : 1][totalchn - 1];
-				UInt8 csum = -(0x84 + 0x01 + 0x0a + (totalchn - 1) + ca);
-
-				/* Stop transmission */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-				sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0x00), cad);
-
-				/* Write Audio InfoFrame header + data */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x84), cad);  /* type: Audio */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x01), cad);  /* version */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x0a), cad);  /* length */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, csum), cad);  /* checksum */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, totalchn - 1), cad); /* CC */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x00), cad);  /* CT/SF/SS */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x00), cad);  /* format */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, ca), cad);    /* CA */
-
-				/* Start transmission */
-				sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-				sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
-			}
-			IOLog("VoodooHDA HDMI: ATI path + CHAN_SLOT + InfoFrame + DIP_XMIT=0xc0 nid=%d ca=0x%02x chn=%d\n",
-				  nid_pin, hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
-			continue;
-		}
-
-		/* === Standard HDA path (Intel, Nvidia, ATI with macOS GPU driver) === */
-		IOLog("VoodooHDA HDMI: standard HDA path nid_pin=%d\n", nid_pin);
-
-		/* Set channel mapping (standard HDA). */
-		for (int k = 0; k < 8; k++)
-			sendCommand(HDA_CMD_SET_HDMI_CHAN_SLOT(cad, nid_pin,
-												   (((hdmich[totalext == 0 ? 0 : 1][totalchn - 1]>> (k * 4)) & 0xf) << 4) | k), cad);
-
-		/*
-		 * Note on HBR (High Bit Rate)
-		 *   When sending encoded audio with bit rate > 6.144 mbps, HDMI requires using HBR.
-		 *   This corresponds to 96 or 192 KHz frame rate, 16 bits/sample, 8 channels in HDA.
-		 *   At present, VoodooHDA supportes AFMT_AC3 with
-		 *     frame rates 32 - 48 KHz, 16 bits/sample, 2 channels.  So HBR is not needed.
-		 */
-    /*
-     * Enable High Bit Rate (HBR) Encoded Packet Type
-     * (EPT), if supported and needed (8ch data).
-     */
-    if (HDA_PARAM_PIN_CAP_HDMI(widget_pin->pin.cap) &&
-        HDA_PARAM_PIN_CAP_HBR(widget_pin->pin.cap)) {
-      widget_pin->pin.ctrl &= ~HDA_CMD_SET_PIN_WIDGET_CTRL_VREF_ENABLE_MASK;
-      if ((channel->format & AFMT_AC3) && (totalchn == 8))
-        widget_pin->pin.ctrl |= 0x03;
-      sendCommand(HDA_CMD_SET_PIN_WIDGET_CTRL(cad, nid_pin, widget_pin->pin.ctrl), cad);
-    }
-
-
-		/*
-		 * Find size of Audio Infoframe buffer to see if it can be used.
-		 * On some HDMI codecs, if HDMI is not connected by graphics card driver,
-		 *   the Infoframe buffer has zero length.
-		 */
-		if (AudioInfopacketBufferSize == 0xFFFFU) {
-			AudioInfopacketBufferSize = static_cast<UInt16>(sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid_pin, 0x00), cad)) + 1U;
-			IOLog("VoodooHDA HDMI: nid_pin=%d AudioInfopacketBufferSize=%u\n", nid_pin, AudioInfopacketBufferSize);
-		}
-
-		if (AudioInfopacketBufferSize < 10U) {
-			IOLog("VoodooHDA HDMI: nid_pin=%d infoframe buffer too small (%u), skipping\n", nid_pin, AudioInfopacketBufferSize);
-			continue;
-		}
-
-		/*
-		 * Send Audio Infoframe
-		 */
-
-		/* Stop audio infoframe transmission. */
-		sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-		sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0x00), cad);
-
-		/* Clear audio infoframe buffer. */
-		sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-		for (int k = 0; k < static_cast<int>(AudioInfopacketBufferSize); k++)
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x00), cad);
-		
-		/* Write HDMI/DisplayPort audio infoframe. */
-		sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-		/*
-		 * Need Valid ELD to tell between DP or HDMI
-		 */
-		bool isDP_conn = widget_pin->eld != NULL && widget_pin->eld_len >= 6 && ((widget_pin->eld[5] >> 2) & 0x3) == 1;
-		IOLog("VoodooHDA HDMI: nid_pin=%d infoframe: eld_len=%d conn_type=%s ca=0x%02x totalchn=%d\n",
-			  nid_pin, widget_pin->eld_len, isDP_conn ? "DP" : "HDMI",
-			  hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
-#if DP_AUDIO
-		if (isDP_conn) { /* DisplayPort */
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x84), cad);
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x1b), cad);
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x44), cad);
-			logMsg("DP Audio infoframe\n");
-		} else {
-#endif
-      /* HDMI */
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x84), cad);
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x01), cad);
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x0a), cad);
-			logMsg("HDMI Audio infoframe\n");
-
-			csum = 0;
-			csum -= 0x84 + 0x01 + 0x0a + (totalchn - 1) + hdmica[totalext == 0 ? 0 : 1][totalchn - 1];
-			sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, csum), cad);
-#if DP_AUDIO
-		}
-#endif
-		sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, totalchn - 1), cad);
-		sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x00), cad);
-		sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x00), cad);
-		sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, hdmica[totalext == 0 ? 0 : 1][totalchn - 1]), cad);
-
-		/* Start audio infoframe transmission. */
-		sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
-		sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
-	}
+	if (mGFXController)
+		mGFXController->setupStream(channel, dac, assoc, totalchn, totalext);
 }
 
 void VoodooHDADevice::streamStop(Channel *channel)

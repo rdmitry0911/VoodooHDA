@@ -2,6 +2,7 @@
 
 #include "VoodooHDAEngine.h"
 #include "VoodooHDADevice.h"
+#include "VoodooGFXHDA.h"
 #include "Common.h"
 #include "Verbs.h"
 #include "OssCompat.h"
@@ -84,6 +85,7 @@ bool VoodooHDAEngine::initWithChannel(Channel *channel)
 		goto done;
 
 	mChannel = channel;
+	mDigitalStream = NULL;
 	mDigitalTimingPollActive = false;
 	mHasDigitalPosition = false;
 	mLastDigitalPosition = 0;
@@ -100,6 +102,12 @@ void VoodooHDAEngine::free()
 	RELEASE(mStream);
 
 	RELEASE(mSelControl);
+	if (mDigitalStream) {
+		if (mDevice && mDevice->mGFXController)
+			mDevice->mGFXController->unregisterStream(mChannel, mDigitalStream);
+		delete mDigitalStream;
+		mDigitalStream = NULL;
+	}
 
 	mDevice = NULL;
 
@@ -384,6 +392,15 @@ bool VoodooHDAEngine::initHardware(IOService *provider)
 
 	mVerbose = mDevice->mVerbose;
 	getPortName();
+	if (mChannel->pcmDevice && mChannel->pcmDevice->digital >= 2 &&
+	    getEngineDirection() == kIOAudioStreamDirectionOutput && mDevice->mGFXController) {
+		mDigitalStream = new VoodooGFXHDAStream;
+		if (!mDigitalStream || !mDigitalStream->init(mDevice->mGFXController, this, mChannel)) {
+			errorMsg("error: couldn't initialize VoodooGFXHDAStream\n");
+			goto done;
+		}
+		mDevice->mGFXController->registerStream(mChannel, mDigitalStream);
+	}
 
 	logMsg("setDesc portName = %s\n", mPortName);
 	setDescription(mPortName);
@@ -808,61 +825,39 @@ void VoodooHDAEngine::recalculateSampleOffsets(UInt32 sampleRate)
 
 bool VoodooHDAEngine::usesDigitalTimingPoll()
 {
-	return mChannel && mChannel->pcmDevice &&
-	       mChannel->pcmDevice->digital >= 2 &&
-	       getEngineDirection() == kIOAudioStreamDirectionOutput;
+	return mDigitalStream != NULL;
 }
 
 bool VoodooHDAEngine::hasActiveDigitalTimingPoll()
 {
-	return usesDigitalTimingPoll() && mDigitalTimingPollActive;
+	return mDigitalStream && mDigitalStream->hasActiveTimingPoll();
 }
 
 void VoodooHDAEngine::armDigitalTimingPoll()
 {
-	if (!usesDigitalTimingPoll())
-		return;
-
-	mDigitalTimingPollActive = true;
-	resetDigitalTimingState();
-
-	if (mDevice)
-		mDevice->scheduleDigitalHDMIPoll();
+	if (mDigitalStream)
+		mDigitalStream->armTimingPoll();
 }
 
 void VoodooHDAEngine::disarmDigitalTimingPoll()
 {
-	mDigitalTimingPollActive = false;
-	resetDigitalTimingState();
+	if (mDigitalStream)
+		mDigitalStream->disarmTimingPoll();
 }
 
 void VoodooHDAEngine::resetDigitalTimingState()
 {
-	mHasDigitalPosition = false;
-	mLastDigitalPosition = 0;
+	if (mDigitalStream)
+		mDigitalStream->resetTimingState();
+	else {
+		mHasDigitalPosition = false;
+		mLastDigitalPosition = 0;
+	}
 }
 
 bool VoodooHDAEngine::pollDigitalTimingProgress()
 {
-	UInt32 position;
-	bool valid = false;
-
-	if (!mDigitalTimingPollActive || !usesDigitalTimingPoll() || !mDevice || !mChannel ||
-	    !(mChannel->flags & HDAC_CHN_RUNNING))
-		return false;
-
-	position = mDevice->channelGetLinkPosition(mChannel, &valid);
-	if (!valid)
-		return false;
-
-	if (!mHasDigitalPosition || position != mLastDigitalPosition) {
-		mLastDigitalPosition = position;
-		mHasDigitalPosition = true;
-		takeTimeStamp(false);
-		return true;
-	}
-
-	return false;
+	return mDigitalStream ? mDigitalStream->pollTimingProgress() : false;
 }
 
 UInt32 VoodooHDAEngine::getCurrentSampleFrame()
@@ -871,6 +866,9 @@ UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 	 * if frame >= numSampleFrames it returns 0, guarding against SDLPIB glitches. */
 	UInt32 position;
 	bool valid = false;
+
+	if (mDigitalStream)
+		return mDigitalStream->getCurrentSampleFrame();
 
 	/* Digital streams keep their own link-position cache updated from the
 	 * SDLPIB polling path, instead of sampling the generic channel position

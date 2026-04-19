@@ -10,6 +10,7 @@
 #include "Private.h"
 
 class VoodooHDADevice;
+class VoodooGFXHDAStream;
 
 class IOAudioPort;
 class IOAudioSelectorControl;
@@ -30,6 +31,7 @@ public:
 
 	Channel *mChannel;
 	VoodooHDADevice *mDevice;
+	VoodooGFXHDAStream *mDigitalStream;
 	IOAudioStream *mStream;
 	bool emptyStream;
 	bool mDigitalTimingPollActive;
