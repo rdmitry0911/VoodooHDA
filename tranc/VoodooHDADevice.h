@@ -252,6 +252,7 @@ public:
 	VoodooHDAEngine *lookupEngine(int channelId);
 	void handleChannelInterrupt(int channelId);
 	void scheduleDigitalHDMIPoll();
+	void updateDigitalHDMITiming(Channel *channel, bool active, bool primeNow = false);
 
 	UInt32 sendCommand(UInt32 verb, nid_t cad);
 	void sendCommands(CommandList *commands, nid_t cad);

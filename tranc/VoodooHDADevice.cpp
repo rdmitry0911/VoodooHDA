@@ -1697,6 +1697,35 @@ void VoodooHDADevice::scheduleDigitalHDMIPoll()
 		mTimerSource->setTimeoutMS(kVoodooHDADigitalPollIntervalMs);
 }
 
+void VoodooHDADevice::updateDigitalHDMITiming(Channel *channel, bool active, bool primeNow)
+{
+	int channelId;
+	VoodooHDAEngine *engine;
+
+	if (!channel || !channel->pcmDevice || channel->pcmDevice->digital < 2 ||
+	    channel->direction != PCMDIR_PLAY)
+		return;
+
+	channelId = (channel->direction == PCMDIR_PLAY) ? channel->pcmDevice->playChanId :
+	            channel->pcmDevice->recChanId;
+	engine = lookupEngine(channelId);
+	if (!engine)
+		return;
+
+	if (!active) {
+		engine->disarmDigitalTimingPoll();
+		return;
+	}
+
+	engine->armDigitalTimingPoll();
+
+	/* The digital stream now follows a controller-owned lifecycle:
+	 * after RUN is asserted, immediately seed the first timestamp from
+	 * the SDLPIB path instead of the generic engine start callback. */
+	if (primeNow)
+		engine->pollDigitalTimingProgress();
+}
+
 /******************************************************************************************/
 /******************************************************************************************/
 
@@ -2837,6 +2866,8 @@ void VoodooHDADevice::channelStop(Channel *channel, const bool shouldLock)
 	if (shouldLock)
 		LOCK();
 
+	updateDigitalHDMITiming(channel, false);
+
 	if (channel->pcmDevice && channel->pcmDevice->digital >= 2) {
 		nid_t pin = getHDMIPinForChannel(channel);
 		IOLog("VoodooHDA DBG: channelStop HDMI pin=%d streamId=%d\n",
@@ -2898,6 +2929,7 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 	streamSetId(channel);
 	streamSetup(channel);
 	streamStart(channel);
+	updateDigitalHDMITiming(channel, true, true);
 
 	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 && mFBNotifier) {
 		nid_t pin = getHDMIPinForChannel(channel);

@@ -760,8 +760,9 @@ IOReturn VoodooHDAEngine::performAudioEngineStart()
 	// appear longer than it is; at the first BCIS the loop-count increment causes a timing
 	// discontinuity → crackle.
 	mDevice->channelStart(mChannel);
-	armDigitalTimingPoll();
-	takeTimeStamp(false);
+	if (!usesDigitalTimingPoll()) {
+		takeTimeStamp(false);
+	}
 
 	return kIOReturnSuccess;
 }
@@ -771,7 +772,6 @@ IOReturn VoodooHDAEngine::performAudioEngineStop()
 //	logMsg("VoodooHDAEngine[%p]::performAudioEngineStop\n", this);
 
 //	logMsg("calling channelStop() for channel %d\n", getEngineId());
-	disarmDigitalTimingPoll();
 	mDevice->channelStop(mChannel);
 
 	return kIOReturnSuccess;
