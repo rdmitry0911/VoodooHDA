@@ -89,6 +89,7 @@ public:
 	bool hasActiveDigitalTimingPoll();
 	void armDigitalTimingPoll();
 	void disarmDigitalTimingPoll();
+	void resetDigitalTimingState();
 	bool pollDigitalTimingProgress();
 
 	virtual IOReturn performFormatChange(IOAudioStream *audioStream, const IOAudioStreamFormat *newFormat,

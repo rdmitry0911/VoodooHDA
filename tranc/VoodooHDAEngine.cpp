@@ -824,8 +824,7 @@ void VoodooHDAEngine::armDigitalTimingPoll()
 		return;
 
 	mDigitalTimingPollActive = true;
-	mHasDigitalPosition = false;
-	mLastDigitalPosition = 0;
+	resetDigitalTimingState();
 
 	if (mDevice)
 		mDevice->scheduleDigitalHDMIPoll();
@@ -834,6 +833,11 @@ void VoodooHDAEngine::armDigitalTimingPoll()
 void VoodooHDAEngine::disarmDigitalTimingPoll()
 {
 	mDigitalTimingPollActive = false;
+	resetDigitalTimingState();
+}
+
+void VoodooHDAEngine::resetDigitalTimingState()
+{
 	mHasDigitalPosition = false;
 	mLastDigitalPosition = 0;
 }
@@ -841,18 +845,14 @@ void VoodooHDAEngine::disarmDigitalTimingPoll()
 bool VoodooHDAEngine::pollDigitalTimingProgress()
 {
 	UInt32 position;
-	UInt32 frame;
+	bool valid = false;
 
 	if (!mDigitalTimingPollActive || !usesDigitalTimingPoll() || !mDevice || !mChannel ||
 	    !(mChannel->flags & HDAC_CHN_RUNNING))
 		return false;
 
-	position = static_cast<UInt32>(mDevice->channelGetPosition(mChannel));
-	if (position >= mBufferSize || mSampleSize == 0)
-		return false;
-
-	frame = position / mSampleSize;
-	if (frame >= mNumSampleFrames)
+	position = mDevice->channelGetLinkPosition(mChannel, &valid);
+	if (!valid)
 		return false;
 
 	if (!mHasDigitalPosition || position != mLastDigitalPosition) {
@@ -870,12 +870,18 @@ UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 	/* AppleGFXHDAEngine::getCurrentSampleFrame clamps to [0, numSampleFrames):
 	 * if frame >= numSampleFrames it returns 0, guarding against SDLPIB glitches. */
 	UInt32 position;
+	bool valid = false;
 
 	/* Digital streams keep their own link-position cache updated from the
 	 * SDLPIB polling path, instead of sampling the generic channel position
 	 * directly on every IOAudioEngine query. */
 	if (usesDigitalTimingPoll() && mHasDigitalPosition)
 		position = mLastDigitalPosition;
+	else if (usesDigitalTimingPoll()) {
+		position = mDevice->channelGetLinkPosition(mChannel, &valid);
+		if (!valid)
+			return 0;
+	}
 	else
 		position = static_cast<UInt32>(mDevice->channelGetPosition(mChannel));
 
@@ -968,6 +974,8 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 		mNumSampleFrames = mBufferSize / mSampleSize;
 		mChannel->slack = static_cast<UInt16>(mBufferSize - mNumSampleFrames * mSampleSize);
 		setNumSampleFramesPerBuffer(mNumSampleFrames);
+		if (usesDigitalTimingPoll())
+			resetDigitalTimingState();
 
 		logMsg("buffer size: %ld, channels: %d, bit depth: %d, # samp. frames: %ld\n", (long int)mBufferSize,
 				channels, newFormat->fBitDepth, (long int)mNumSampleFrames);
@@ -981,6 +989,8 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			errorMsg("error: couldn't set sample rate %ld\n", (long int)newSampleRate->whole);
 			goto done;
 		}
+		if (usesDigitalTimingPoll())
+			resetDigitalTimingState();
 		/* Recalculate sample offsets for the new rate, as Apple does in
 		 * recalculateEnginesSampleOffset() / recalculateEnginesSampleLatency(). */
 		recalculateSampleOffsets(newSampleRate->whole);

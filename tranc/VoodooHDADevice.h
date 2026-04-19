@@ -360,6 +360,7 @@ public:
 	void channelStop(Channel *channel, bool shouldLock = true);
 	void channelStart(Channel *channel, bool shouldLock = true);
 	int channelGetPosition(Channel *channel);
+	UInt32 channelGetLinkPosition(Channel *channel, bool *valid = NULL);
 
 	void streamSetup(Channel *channel);
 	void streamHDMIorDPExtraSetup(Channel *channel, nid_t, AudioAssoc*, int, int);

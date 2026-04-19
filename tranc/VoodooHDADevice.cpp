@@ -2964,6 +2964,41 @@ int VoodooHDADevice::channelGetPosition(Channel *channel)
 	return position;
 }
 
+UInt32 VoodooHDADevice::channelGetLinkPosition(Channel *channel, bool *valid)
+{
+	UInt32 position = 0;
+	UInt32 bufferBytes;
+
+	if (valid)
+		*valid = false;
+	if (!channel)
+		return 0;
+
+	bufferBytes = channel->blockSize * channel->numBlocks - channel->slack;
+	if (bufferBytes == 0)
+		return 0;
+
+	LOCK();
+
+	/* AppleGFXHDA treats the stream link position as its own source of truth.
+	 * Keep the HDMI/DP poll path off the legacy generic modulo/alignment logic:
+	 * read raw SDLPIB on AMD GPU HDA, otherwise fall back to the DMA position
+	 * buffer when it is actually in use. */
+	if (channel->dmaPos && !(channel->pcmDevice && channel->pcmDevice->digital >= 2))
+		position = *(channel->dmaPos);
+	else
+		position = readData32(channel->off + HDAC_SDLPIB);
+
+	UNLOCK();
+
+	if (position >= bufferBytes)
+		return 0;
+	if (valid)
+		*valid = true;
+
+	return position;
+}
+
 static
 UInt8 calculateStripectl(UInt8 globalSDO, UInt8 stripecap, UInt16 format)
 {
