@@ -470,8 +470,8 @@ bool VoodooHDAEngine::createAudioStream()
 
 	logMsg("(min: %ld, max: %ld) channels=%d%s\n", (long int)mChannel->caps.minSpeed, (long int)mChannel->caps.maxSpeed, (int)channels, isDigital ? " (digital, capped to 2)" : "");
 	sampleBuffer = (UInt8 *) mChannel->buffer->virtAddr;
-	mBufferSize = HDA_BUFSZ_MAX; // hardcoded in pcmAttach()
-    if (!createAudioStream(direction, sampleBuffer, mBufferSize, mChannel->pcmRates,
+	mBufferSize = mChannel->buffer ? static_cast<UInt32>(mChannel->buffer->size) : HDA_BUFSZ_DEFAULT;
+	if (!createAudioStream(direction, sampleBuffer, mBufferSize, mChannel->pcmRates,
                            mChannel->supPcmSizeRates, mChannel->supStreamFormats, channels)) {
 		errorMsg("error: createAudioStream failed channels=%d\n", (int)channels);
 		goto done;

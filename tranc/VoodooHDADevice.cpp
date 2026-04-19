@@ -65,7 +65,8 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	}
 	IOLog("VoodooHDA DBG: super::init() OK, version=%s commit=" VOODOO_HDA_GIT_COMMIT "\n", kmod_info.version);
 
-	dumpMsg("Loading VoodooHDA %s (based on hdac version " HDAC_REVISION ")\n", kmod_info.version);
+	dumpMsg("Loading VoodooHDA %s commit " VOODOO_HDA_GIT_COMMIT " (based on hdac version " HDAC_REVISION ")\n",
+	        kmod_info.version);
 	
 //	ASSERT(dict);
 	verboseLevelNum = OSDynamicCast(OSNumber, dict->getObject(kVoodooHDAVerboseLevelKey));
@@ -172,6 +173,30 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 
 #define	PCI_CLASS_MULTI				0x04
 #define PCI_SUBCLASS_MULTI_HDA		0x03
+
+static UInt32 appleGfxHdaAmdMemoryDescCoeff(UInt32 controllerId)
+{
+	UInt16 vendorId = controllerId & 0xffff;
+	UInt16 deviceId = (controllerId >> 16) & 0xffff;
+
+	if (vendorId != ATI_VENDORID)
+		return 0;
+
+	/* Extracted from AppleGFXHDA's controller table in __TEXT,__const.
+	 * All AMD GPU HDA controllers present there use coefficient 0x3000. */
+	switch (deviceId) {
+		case 0xaae0:
+		case 0xaaf0:
+		case 0xaaf8:
+		case 0xab20:
+		case 0xab28:
+		case 0xab38:
+		case 0xabf8:
+			return 0x3000;
+		default:
+			return 0;
+	}
+}
 
 void VoodooHDADevice::initMixerDefaultValues(void)
 {
@@ -2696,6 +2721,21 @@ Channel *VoodooHDADevice::channelInit(PcmDevice *pcmDevice, int direction)
 		channel->dmaPos = NULL;
 	channel->streamId = ++mStreamCount;
 	channel->direction = direction;
+
+	if (direction == PCMDIR_PLAY && pcmDevice->digital >= 2) {
+		UInt32 coeff = appleGfxHdaAmdMemoryDescCoeff(mDeviceId);
+		if (coeff != 0) {
+			/* AppleGFXHDA allocates graphics-audio stream memory as
+			 * streamId * coeff * 4, then slices it into 4 KB BDL pages. */
+			pcmDevice->chanSize = channel->streamId * coeff * 4;
+			pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN;
+			IOLog("VoodooHDA DBG: channelInit HDMI AppleGFXHDA-like dma streamId=%d coeff=0x%x chanSize=%u chanNumBlocks=%u blockSize=%u\n",
+			      channel->streamId, (unsigned)coeff, (unsigned)pcmDevice->chanSize,
+			      (unsigned)pcmDevice->chanNumBlocks,
+			      (unsigned)(pcmDevice->chanSize / pcmDevice->chanNumBlocks));
+		}
+	}
+
 	channel->blockSize = pcmDevice->chanSize / pcmDevice->chanNumBlocks;
 	channel->numBlocks = pcmDevice->chanNumBlocks;
 
@@ -3393,12 +3433,8 @@ void VoodooHDADevice::bdlSetup(Channel *channel)
 		bdlEntry->addrl = (UInt32) addr;
 		bdlEntry->addrh = (UInt32) (addr >> 32);
 		bdlEntry->len = ((n == numBlocks) ? (blockSize - channel->slack) : blockSize);
-		/* AppleGFXHDA sets IOC on every BDL entry so that BCIS fires once per
-		 * block, giving frequent takeTimeStamp() calls for accurate timing.
-		 * Previously IOC was only on the last entry → 1 interrupt per full
-		 * buffer cycle (≈1.36 s at 48 kHz stereo 16-bit with 64×4 KB blocks),
-		 * causing severe clock drift, erase-head lag, and crackling. */
-		bdlEntry->ioc = 1;
+		/* AppleGFXHDA marks IOC only on the final BDL entry. */
+		bdlEntry->ioc = (n == numBlocks);
 		addr += bdlEntry->len;
 	}
 
@@ -3448,11 +3484,7 @@ int VoodooHDADevice::pcmAttach(PcmDevice *pcmDevice)
 	dumpMsg("pcmAttach: %s\n", buf);
 
 	pcmDevice->chanSize = HDA_BUFSZ_DEFAULT;
-	/* GPU HDA controllers (ATI/AMD, NVidia) share the memory bus with
-	 * graphics.  Large BDL entries (128KB with only 2 entries) force long
-	 * DMA bursts that get starved by the GPU → FIFO underrun → distortion.
-	 * AppleGFXHDA uses 4KB per BDL entry.  Use many small entries for
-	 * digital outputs and keep the default for analog (Intel PCH). */
+	/* Digital outputs use page-sized BDL entries like AppleGFXHDA. */
 	if (pcmDevice->digital)
 		pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN; /* 4KB per entry */
 	else
