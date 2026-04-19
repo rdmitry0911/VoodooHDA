@@ -32,6 +32,9 @@ public:
 	VoodooHDADevice *mDevice;
 	IOAudioStream *mStream;
 	bool emptyStream;
+	bool mDigitalTimingPollActive;
+	bool mHasDigitalPosition;
+	UInt32 mLastDigitalPosition;
 
 	const char *mPortName;
 	char mPortNameBuf[64];
@@ -82,6 +85,10 @@ public:
 	virtual UInt32 getCurrentSampleFrame() override;
 
 	void recalculateSampleOffsets(UInt32 sampleRate);
+	bool usesDigitalTimingPoll();
+	void armDigitalTimingPoll();
+	void disarmDigitalTimingPoll();
+	bool pollDigitalTimingProgress();
 
 	virtual IOReturn performFormatChange(IOAudioStream *audioStream, const IOAudioStreamFormat *newFormat,
 			const IOAudioSampleRate *newSampleRate) override;

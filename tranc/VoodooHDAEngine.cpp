@@ -84,6 +84,9 @@ bool VoodooHDAEngine::initWithChannel(Channel *channel)
 		goto done;
 
 	mChannel = channel;
+	mDigitalTimingPollActive = false;
+	mHasDigitalPosition = false;
+	mLastDigitalPosition = 0;
 
 	result = true;
 done:
@@ -757,6 +760,7 @@ IOReturn VoodooHDAEngine::performAudioEngineStart()
 	// appear longer than it is; at the first BCIS the loop-count increment causes a timing
 	// discontinuity → crackle.
 	mDevice->channelStart(mChannel);
+	armDigitalTimingPoll();
 	takeTimeStamp(false);
 
 	return kIOReturnSuccess;
@@ -767,6 +771,7 @@ IOReturn VoodooHDAEngine::performAudioEngineStop()
 //	logMsg("VoodooHDAEngine[%p]::performAudioEngineStop\n", this);
 
 //	logMsg("calling channelStop() for channel %d\n", getEngineId());
+	disarmDigitalTimingPoll();
 	mDevice->channelStop(mChannel);
 
 	return kIOReturnSuccess;
@@ -799,6 +804,52 @@ void VoodooHDAEngine::recalculateSampleOffsets(UInt32 sampleRate)
 	logMsg("recalculateSampleOffsets: rate=%u %s outOffset=%u inOffset=%u latency=%u\n",
 	       (unsigned)sampleRate, isDigital ? "HDMI/DP" : "Analog",
 	       (unsigned)outOffset, (unsigned)inOffset, (unsigned)latency);
+}
+
+bool VoodooHDAEngine::usesDigitalTimingPoll()
+{
+	return mChannel && mChannel->pcmDevice &&
+	       mChannel->pcmDevice->digital >= 2 &&
+	       getEngineDirection() == kIOAudioStreamDirectionOutput;
+}
+
+void VoodooHDAEngine::armDigitalTimingPoll()
+{
+	if (!usesDigitalTimingPoll())
+		return;
+
+	mDigitalTimingPollActive = true;
+	mHasDigitalPosition = false;
+	mLastDigitalPosition = 0;
+
+	if (mDevice)
+		mDevice->scheduleDigitalHDMIPoll();
+}
+
+void VoodooHDAEngine::disarmDigitalTimingPoll()
+{
+	mDigitalTimingPollActive = false;
+	mHasDigitalPosition = false;
+	mLastDigitalPosition = 0;
+}
+
+bool VoodooHDAEngine::pollDigitalTimingProgress()
+{
+	UInt32 position;
+
+	if (!mDigitalTimingPollActive || !usesDigitalTimingPoll() || !mDevice || !mChannel ||
+	    !(mChannel->flags & HDAC_CHN_RUNNING))
+		return false;
+
+	position = static_cast<UInt32>(mDevice->channelGetPosition(mChannel));
+	if (!mHasDigitalPosition || position != mLastDigitalPosition) {
+		mLastDigitalPosition = position;
+		mHasDigitalPosition = true;
+		takeTimeStamp(false);
+		return true;
+	}
+
+	return false;
 }
 
 UInt32 VoodooHDAEngine::getCurrentSampleFrame()

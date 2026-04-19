@@ -251,6 +251,7 @@ public:
 	int handleStreamInterrupt(Channel *channel);
 	VoodooHDAEngine *lookupEngine(int channelId);
 	void handleChannelInterrupt(int channelId);
+	void scheduleDigitalHDMIPoll();
 
 	UInt32 sendCommand(UInt32 verb, nid_t cad);
 	void sendCommands(CommandList *commands, nid_t cad);
