@@ -41,7 +41,6 @@ OSDefineMetaClassAndStructors(VoodooHDADevice, IOAudioDevice)
 
 #define kVoodooHDAVerboseLevelKey "VoodooHDAVerboseLevel"
 
-static const UInt32 kVoodooHDADigitalPollIntervalMs = 4;
 static const UInt32 kVoodooHDATimerIdleIntervalMs = 5000;
 
 // cue8chalk: added to allow for the volume change fix to be controlled from the plist
@@ -1675,15 +1674,9 @@ void VoodooHDADevice::handleChannelInterrupt(int channelId)
 		errorMsg("warning: couldn't find engine matching channel %d\n", channelId);
 		return;
 	}
-	if (engine->usesDigitalTimingPoll())
+	if (mGFXController && mGFXController->ownsChannel(engine->mChannel))
 		return;
 	engine->takeTimeStamp(true, reinterpret_cast<AbsoluteTime*>(&mIntrTimeStamp));
-}
-
-void VoodooHDADevice::scheduleDigitalHDMIPoll()
-{
-	if (mTimerSource)
-		mTimerSource->setTimeoutMS(kVoodooHDADigitalPollIntervalMs);
 }
 
 /******************************************************************************************/
@@ -2359,19 +2352,15 @@ __attribute__((visibility("hidden")))
 void VoodooHDADevice::timeoutOccurred(OSObject *owner, IOTimerEventSource *source)
 {
 	VoodooHDADevice *device = OSDynamicCast(VoodooHDADevice, owner);
-	bool activeDigitalPoll = false;
 
 	if (!device)
 		return;
 
-	if (device->mGFXController)
-		activeDigitalPoll = device->mGFXController->serviceStreams();
-
-	if (!activeDigitalPoll && device->mVerbose >= 3)
+	if (device->mVerbose >= 3)
 		device->logMsg("total interrupts: %lld (%lld channel interrupts)\n", device->mTotalInt,
-				device->mTotalChanInt);
+					device->mTotalChanInt);
 
-	source->setTimeoutMS(activeDigitalPoll ? kVoodooHDADigitalPollIntervalMs : kVoodooHDATimerIdleIntervalMs);
+	source->setTimeoutMS(kVoodooHDATimerIdleIntervalMs);
 }
 
 /********************************************************************************************/

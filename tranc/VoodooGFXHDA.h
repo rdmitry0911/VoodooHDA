@@ -18,11 +18,11 @@ public:
 	VoodooGFXHDAStream();
 
 	bool init(VoodooGFXHDAController *controller, VoodooHDAEngine *engine, Channel *channel);
-	bool hasActiveTimingPoll() const;
-	void armTimingPoll();
-	void disarmTimingPoll();
-	void resetTimingState();
-	bool pollTimingProgress();
+	bool isActive() const;
+	void activate();
+	void deactivate();
+	void resetPositionState();
+	bool refreshPosition(bool emitTimestamp);
 	void serviceInterrupt(UInt32 status);
 	UInt32 getCurrentSampleFrame();
 
@@ -30,7 +30,7 @@ private:
 	VoodooGFXHDAController *mController;
 	VoodooHDAEngine *mEngine;
 	Channel *mChannel;
-	bool mTimingPollActive;
+	bool mActive;
 	bool mHasPosition;
 	UInt32 mLastPosition;
 };
@@ -49,12 +49,10 @@ public:
 	void prepareStreamDMA(Channel *channel);
 	void startStream(Channel *channel);
 	void stopStream(Channel *channel);
-	bool serviceStreams();
 	void handleStreamInterrupt(Channel *channel, UInt32 status);
 	void updateTiming(Channel *channel, bool active, bool primeNow);
 	UInt32 getLinkPosition(Channel *channel, bool *valid = NULL);
 	void setupStream(Channel *channel, nid_t dac, AudioAssoc *assoc, int totalchn, int totalext);
-	void scheduleTimingPoll();
 	VoodooHDADevice *getDevice() const;
 
 private:

@@ -29,7 +29,7 @@ static UInt32 appleGfxHdaAmdMemoryDescCoeff(UInt32 controllerId)
 
 VoodooGFXHDAStream::VoodooGFXHDAStream()
 	: mController(NULL), mEngine(NULL), mChannel(NULL),
-	  mTimingPollActive(false), mHasPosition(false), mLastPosition(0)
+	  mActive(false), mHasPosition(false), mLastPosition(0)
 {
 }
 
@@ -41,41 +41,39 @@ bool VoodooGFXHDAStream::init(VoodooGFXHDAController *controller, VoodooHDAEngin
 	mController = controller;
 	mEngine = engine;
 	mChannel = channel;
-	resetTimingState();
+	resetPositionState();
 	return true;
 }
 
-bool VoodooGFXHDAStream::hasActiveTimingPoll() const
+bool VoodooGFXHDAStream::isActive() const
 {
-	return mTimingPollActive;
+	return mActive;
 }
 
-void VoodooGFXHDAStream::armTimingPoll()
+void VoodooGFXHDAStream::activate()
 {
-	mTimingPollActive = true;
-	resetTimingState();
-	if (mController)
-		mController->scheduleTimingPoll();
+	mActive = true;
+	resetPositionState();
 }
 
-void VoodooGFXHDAStream::disarmTimingPoll()
+void VoodooGFXHDAStream::deactivate()
 {
-	mTimingPollActive = false;
-	resetTimingState();
+	mActive = false;
+	resetPositionState();
 }
 
-void VoodooGFXHDAStream::resetTimingState()
+void VoodooGFXHDAStream::resetPositionState()
 {
 	mHasPosition = false;
 	mLastPosition = 0;
 }
 
-bool VoodooGFXHDAStream::pollTimingProgress()
+bool VoodooGFXHDAStream::refreshPosition(bool emitTimestamp)
 {
 	UInt32 position;
 	bool valid = false;
 
-	if (!mTimingPollActive || !mController || !mEngine || !mChannel ||
+	if (!mActive || !mController || !mEngine || !mChannel ||
 	    !(mChannel->flags & HDAC_CHN_RUNNING))
 		return false;
 
@@ -86,7 +84,8 @@ bool VoodooGFXHDAStream::pollTimingProgress()
 	if (!mHasPosition || position != mLastPosition) {
 		mLastPosition = position;
 		mHasPosition = true;
-		mEngine->takeTimeStamp(false);
+		if (emitTimestamp)
+			mEngine->takeTimeStamp(false);
 		return true;
 	}
 
@@ -95,29 +94,21 @@ bool VoodooGFXHDAStream::pollTimingProgress()
 
 void VoodooGFXHDAStream::serviceInterrupt(UInt32 status)
 {
-	if (!(status & HDAC_SDSTS_BCIS)) {
-		if (mTimingPollActive && mController)
-			mController->scheduleTimingPoll();
+	if (!(status & HDAC_SDSTS_BCIS))
 		return;
-	}
 
-	if (!pollTimingProgress() && mTimingPollActive && mController)
-		mController->scheduleTimingPoll();
+	refreshPosition(true);
 }
 
 UInt32 VoodooGFXHDAStream::getCurrentSampleFrame()
 {
 	UInt32 position;
 	UInt32 frame;
-	bool valid = false;
 
-	if (mHasPosition)
-		position = mLastPosition;
-	else {
-		position = mController ? mController->getLinkPosition(mChannel, &valid) : 0;
-		if (!valid)
-			return 0;
-	}
+	refreshPosition(false);
+	if (!mHasPosition)
+		return 0;
+	position = mLastPosition;
 
 	if (!mEngine->mSampleSize)
 		return 0;
@@ -245,7 +236,7 @@ void VoodooGFXHDAController::prepareStreamDMA(Channel *channel)
 		return;
 
 	if (stream)
-		stream->resetTimingState();
+		stream->resetPositionState();
 
 	stopStreamRegisters(channel);
 	resetStreamRegisters(channel);
@@ -281,21 +272,6 @@ void VoodooGFXHDAController::stopStream(Channel *channel)
 		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
 }
 
-bool VoodooGFXHDAController::serviceStreams()
-{
-	bool active = false;
-
-	for (int i = 0; i < mNumStreams; i++) {
-		VoodooGFXHDAStream *stream = mStreams[i].stream;
-		if (!stream || !stream->hasActiveTimingPoll())
-			continue;
-		active = true;
-		stream->pollTimingProgress();
-	}
-
-	return active;
-}
-
 void VoodooGFXHDAController::handleStreamInterrupt(Channel *channel, UInt32 status)
 {
 	VoodooGFXHDAStream *stream = lookupStream(channel);
@@ -314,13 +290,13 @@ void VoodooGFXHDAController::updateTiming(Channel *channel, bool active, bool pr
 		return;
 
 	if (!active) {
-		stream->disarmTimingPoll();
+		stream->deactivate();
 		return;
 	}
 
-	stream->armTimingPoll();
+	stream->activate();
 	if (primeNow)
-		stream->pollTimingProgress();
+		stream->refreshPosition(true);
 }
 
 UInt32 VoodooGFXHDAController::getLinkPosition(Channel *channel, bool *valid)
@@ -529,12 +505,6 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 		mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
 		mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
 	}
-}
-
-void VoodooGFXHDAController::scheduleTimingPoll()
-{
-	if (mDevice)
-		mDevice->scheduleDigitalHDMIPoll();
 }
 
 VoodooHDADevice *VoodooGFXHDAController::getDevice() const

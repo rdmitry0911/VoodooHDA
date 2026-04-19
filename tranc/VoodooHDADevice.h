@@ -248,13 +248,12 @@ public:
 	void startCorb();
 	void startRirb();
 
-	int rirbFlush();
-	int handleStreamInterrupt(Channel *channel);
-	VoodooHDAEngine *lookupEngine(int channelId);
-	void handleChannelInterrupt(int channelId);
-	void scheduleDigitalHDMIPoll();
+		int rirbFlush();
+		int handleStreamInterrupt(Channel *channel);
+		VoodooHDAEngine *lookupEngine(int channelId);
+		void handleChannelInterrupt(int channelId);
 
-	UInt32 sendCommand(UInt32 verb, nid_t cad);
+		UInt32 sendCommand(UInt32 verb, nid_t cad);
 	void sendCommands(CommandList *commands, nid_t cad);
 
 	static const char *findCodecName(Codec *codec);

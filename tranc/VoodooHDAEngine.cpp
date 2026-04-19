@@ -774,7 +774,7 @@ IOReturn VoodooHDAEngine::performAudioEngineStart()
 	// appear longer than it is; at the first BCIS the loop-count increment causes a timing
 	// discontinuity → crackle.
 	mDevice->channelStart(mChannel);
-	if (!usesDigitalTimingPoll()) {
+	if (!mDigitalStream) {
 		takeTimeStamp(false);
 	}
 
@@ -818,17 +818,6 @@ void VoodooHDAEngine::recalculateSampleOffsets(UInt32 sampleRate)
 	logMsg("recalculateSampleOffsets: rate=%u %s outOffset=%u inOffset=%u latency=%u\n",
 	       (unsigned)sampleRate, isDigital ? "HDMI/DP" : "Analog",
 	       (unsigned)outOffset, (unsigned)inOffset, (unsigned)latency);
-}
-
-bool VoodooHDAEngine::usesDigitalTimingPoll()
-{
-	return mDigitalStream != NULL;
-}
-
-void VoodooHDAEngine::resetDigitalTimingState()
-{
-	if (mDigitalStream)
-		mDigitalStream->resetTimingState();
 }
 
 UInt32 VoodooHDAEngine::getCurrentSampleFrame()
@@ -926,13 +915,13 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			goto done;
 		}
 
-		ASSERT(mBufferSize);
-		mSampleSize = channels * (newFormat->fBitWidth / 8);
-		mNumSampleFrames = mBufferSize / mSampleSize;
-		mChannel->slack = static_cast<UInt16>(mBufferSize - mNumSampleFrames * mSampleSize);
-		setNumSampleFramesPerBuffer(mNumSampleFrames);
-		if (usesDigitalTimingPoll())
-			resetDigitalTimingState();
+			ASSERT(mBufferSize);
+			mSampleSize = channels * (newFormat->fBitWidth / 8);
+			mNumSampleFrames = mBufferSize / mSampleSize;
+			mChannel->slack = static_cast<UInt16>(mBufferSize - mNumSampleFrames * mSampleSize);
+			setNumSampleFramesPerBuffer(mNumSampleFrames);
+			if (mDigitalStream)
+				mDigitalStream->resetPositionState();
 
 		logMsg("buffer size: %ld, channels: %d, bit depth: %d, # samp. frames: %ld\n", (long int)mBufferSize,
 				channels, newFormat->fBitDepth, (long int)mNumSampleFrames);
@@ -942,15 +931,15 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 		setResult = mDevice->channelSetSpeed(mChannel, newSampleRate->whole);
 //		logMsg("channelSetSpeed(%ld) for channel %d returned %d\n", newSampleRate->whole, getEngineId(),
 //				setResult);
-		if ((UInt32) setResult != newSampleRate->whole) {
-			errorMsg("error: couldn't set sample rate %ld\n", (long int)newSampleRate->whole);
-			goto done;
-		}
-		if (usesDigitalTimingPoll())
-			resetDigitalTimingState();
-		/* Recalculate sample offsets for the new rate, as Apple does in
-		 * recalculateEnginesSampleOffset() / recalculateEnginesSampleLatency(). */
-		recalculateSampleOffsets(newSampleRate->whole);
+			if ((UInt32) setResult != newSampleRate->whole) {
+				errorMsg("error: couldn't set sample rate %ld\n", (long int)newSampleRate->whole);
+				goto done;
+			}
+			if (mDigitalStream)
+				mDigitalStream->resetPositionState();
+			/* Recalculate sample offsets for the new rate, as Apple does in
+			 * recalculateEnginesSampleOffset() / recalculateEnginesSampleLatency(). */
+			recalculateSampleOffsets(newSampleRate->whole);
 	}
 
 	result = kIOReturnSuccess;
