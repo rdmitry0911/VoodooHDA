@@ -2770,19 +2770,8 @@ Channel *VoodooHDADevice::channelInit(PcmDevice *pcmDevice, int direction)
 	channel->streamId = ++mStreamCount;
 	channel->direction = direction;
 
-	if (direction == PCMDIR_PLAY && pcmDevice->digital >= 2) {
-		UInt32 coeff = appleGfxHdaAmdMemoryDescCoeff(mDeviceId);
-		if (coeff != 0) {
-			/* AppleGFXHDA allocates graphics-audio stream memory as
-			 * streamId * coeff * 4, then slices it into 4 KB BDL pages. */
-			pcmDevice->chanSize = channel->streamId * coeff * 4;
-			pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN;
-			IOLog("VoodooHDA DBG: channelInit HDMI AppleGFXHDA-like dma streamId=%d coeff=0x%x chanSize=%u chanNumBlocks=%u blockSize=%u\n",
-			      channel->streamId, (unsigned)coeff, (unsigned)pcmDevice->chanSize,
-			      (unsigned)pcmDevice->chanNumBlocks,
-			      (unsigned)(pcmDevice->chanSize / pcmDevice->chanNumBlocks));
-		}
-	}
+	if (direction == PCMDIR_PLAY && pcmDevice->digital >= 2 && mGFXController)
+		return mGFXController->initializeStreamDMA(channel) ? channel : NULL;
 
 	channel->blockSize = pcmDevice->chanSize / pcmDevice->chanNumBlocks;
 	channel->numBlocks = pcmDevice->chanNumBlocks;
@@ -2861,13 +2850,17 @@ void VoodooHDADevice::channelStop(Channel *channel, const bool shouldLock)
 			mFBNotifier->notifyStreamingState(cad, pin, false);
 	}
 
-	streamStop(channel);
+	if (mGFXController && mGFXController->ownsChannel(channel))
+		mGFXController->stopStream(channel);
+	else {
+		streamStop(channel);
 
-	/* Zero the DMA buffer after stopping so no stale audio leaks into the
-	 * next session.  This mirrors the bzero in channelStart and ensures the
-	 * buffer is clean even if the next start arrives without a full reset. */
-	if (channel->buffer)
-		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
+		/* Zero the DMA buffer after stopping so no stale audio leaks into the
+		 * next session.  This mirrors the bzero in channelStart and ensures the
+		 * buffer is clean even if the next start arrives without a full reset. */
+		if (channel->buffer)
+			bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
+	}
 
 	for (int i = 0; channel->io[i] != -1; i++) {
 		Widget *widget = widgetGet(channel->funcGroup, channel->io[i]);
@@ -2893,27 +2886,34 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 		      pin, channel->streamId, (int)channel->speed);
 	}
 
-	streamStop(channel);
-	streamReset(channel);
+	if (mGFXController && mGFXController->ownsChannel(channel))
+		mGFXController->prepareStreamDMA(channel);
+	else {
+		streamStop(channel);
+		streamReset(channel);
 
-	/* Verify SDLPIB is zero after stream reset.  AMD GPU HDA controllers
-	 * sometimes leave a stale position → IOAudioEngine writes/erases at the
-	 * wrong offset → "sound starts from the middle" / residual sounds. */
-	{
-		UInt32 posAfterReset = readData32(channel->off + HDAC_SDLPIB);
-		if (posAfterReset != 0)
-			IOLog("VoodooHDA WARN: SDLPIB=0x%x after streamReset (stream off=0x%x), expected 0\n",
-			      posAfterReset, channel->off);
+		/* Verify SDLPIB is zero after stream reset.  AMD GPU HDA controllers
+		 * sometimes leave a stale position → IOAudioEngine writes/erases at the
+		 * wrong offset → "sound starts from the middle" / residual sounds. */
+		{
+			UInt32 posAfterReset = readData32(channel->off + HDAC_SDLPIB);
+			if (posAfterReset != 0)
+				IOLog("VoodooHDA WARN: SDLPIB=0x%x after streamReset (stream off=0x%x), expected 0\n",
+				      posAfterReset, channel->off);
+		}
+
+		/* Zero the DMA sample buffer before each playback session so that wrap-around
+		 * never replays stale audio from a prior clip (old data → elongation + crackling). */
+		if (channel->buffer)
+			bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
+		bdlSetup(channel);
+		streamSetId(channel);
 	}
-
-	/* Zero the DMA sample buffer before each playback session so that wrap-around
-	 * never replays stale audio from a prior clip (old data → elongation + crackling). */
-	if (channel->buffer)
-		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
-	bdlSetup(channel);
-	streamSetId(channel);
 	streamSetup(channel);
-	streamStart(channel);
+	if (mGFXController && mGFXController->ownsChannel(channel))
+		mGFXController->startStream(channel);
+	else
+		streamStart(channel);
 	if (mGFXController)
 		mGFXController->updateTiming(channel, true, true);
 

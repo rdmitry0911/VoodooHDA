@@ -4,7 +4,28 @@
 #include "VoodooHDAEngine.h"
 #include "VoodooGFXHDA.h"
 #include "VoodooHDAFramebufferNotifier.h"
+#include "Common.h"
 #include "Verbs.h"
+
+static UInt32 appleGfxHdaAmdMemoryDescCoeff(UInt32 controllerId)
+{
+	switch (controllerId & 0xffff) {
+		case 0xaa00:
+		case 0xaa08:
+		case 0xaa10:
+		case 0xaa18:
+		case 0xaa20:
+		case 0xaa28:
+		case 0xaa30:
+		case 0xaa38:
+		case 0xaa40:
+		case 0xaa48:
+		case 0xaaf0:
+			return 0x3000;
+		default:
+			return 0;
+	}
+}
 
 VoodooGFXHDAStream::VoodooGFXHDAStream()
 	: mController(NULL), mEngine(NULL), mChannel(NULL),
@@ -72,6 +93,18 @@ bool VoodooGFXHDAStream::pollTimingProgress()
 	return false;
 }
 
+void VoodooGFXHDAStream::serviceInterrupt(UInt32 status)
+{
+	if (!(status & HDAC_SDSTS_BCIS)) {
+		if (mTimingPollActive && mController)
+			mController->scheduleTimingPoll();
+		return;
+	}
+
+	if (!pollTimingProgress() && mTimingPollActive && mController)
+		mController->scheduleTimingPoll();
+}
+
 UInt32 VoodooGFXHDAStream::getCurrentSampleFrame()
 {
 	UInt32 position;
@@ -108,6 +141,13 @@ bool VoodooGFXHDAController::init(VoodooHDADevice *device)
 	mNumStreams = 0;
 	bzero(mStreams, sizeof(mStreams));
 	return true;
+}
+
+bool VoodooGFXHDAController::ownsChannel(Channel *channel) const
+{
+	return channel && channel->pcmDevice &&
+	       channel->direction == PCMDIR_PLAY &&
+	       channel->pcmDevice->digital >= 2;
 }
 
 void VoodooGFXHDAController::registerStream(Channel *channel, VoodooGFXHDAStream *stream)
@@ -151,6 +191,119 @@ VoodooGFXHDAStream *VoodooGFXHDAController::lookupStream(Channel *channel)
 			return mStreams[i].stream;
 	}
 	return NULL;
+}
+
+bool VoodooGFXHDAController::initializeStreamDMA(Channel *channel)
+{
+	PcmDevice *pcmDevice;
+	UInt32 coeff;
+
+	if (!ownsChannel(channel) || !mDevice)
+		return false;
+
+	pcmDevice = channel->pcmDevice;
+	coeff = appleGfxHdaAmdMemoryDescCoeff(mDevice->mDeviceId);
+	if (coeff != 0) {
+		/* AppleGFXHDA allocates graphics-audio stream memory as
+		 * streamId * coeff * 4, then slices it into 4 KB BDL pages. */
+		pcmDevice->chanSize = channel->streamId * coeff * 4;
+		pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN;
+		IOLog("VoodooHDA DBG: channelInit HDMI AppleGFXHDA-like dma streamId=%d coeff=0x%x chanSize=%u chanNumBlocks=%u blockSize=%u\n",
+		      channel->streamId, (unsigned)coeff, (unsigned)pcmDevice->chanSize,
+		      (unsigned)pcmDevice->chanNumBlocks,
+		      (unsigned)(pcmDevice->chanSize / pcmDevice->chanNumBlocks));
+	}
+
+	channel->blockSize = pcmDevice->chanSize / pcmDevice->chanNumBlocks;
+	channel->numBlocks = pcmDevice->chanNumBlocks;
+
+	if (allocateBdlMemory(channel) != 0) {
+		channel->numBlocks = 0;
+		return false;
+	}
+
+	channel->buffer = mDevice->allocateDmaMemory(pcmDevice->chanSize, "buffer");
+	if (!channel->buffer) {
+		mDevice->errorMsg("can't allocate HDMI/DP sound buffer!\n");
+		return false;
+	}
+
+	ASSERT(channel->buffer->size == pcmDevice->chanSize);
+	ASSERT(channel->blockSize <= (pcmDevice->chanSize / HDA_BDL_MIN));
+	ASSERT(channel->blockSize >= HDA_BLK_MIN);
+	ASSERT(channel->numBlocks <= HDA_BDL_MAX);
+	ASSERT(channel->numBlocks >= HDA_BDL_MIN);
+
+	return true;
+}
+
+void VoodooGFXHDAController::prepareStreamDMA(Channel *channel)
+{
+	VoodooGFXHDAStream *stream = lookupStream(channel);
+
+	if (!ownsChannel(channel) || !mDevice)
+		return;
+
+	if (stream)
+		stream->resetTimingState();
+
+	stopStreamRegisters(channel);
+	resetStreamRegisters(channel);
+
+	{
+		UInt32 posAfterReset = mDevice->readData32(channel->off + HDAC_SDLPIB);
+		if (posAfterReset != 0)
+			IOLog("VoodooHDA WARN: SDLPIB=0x%x after streamReset (stream off=0x%x), expected 0\n",
+			      posAfterReset, channel->off);
+	}
+
+	if (channel->buffer)
+		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
+
+	setupBdl(channel);
+	setStreamId(channel);
+}
+
+void VoodooGFXHDAController::startStream(Channel *channel)
+{
+	if (ownsChannel(channel))
+		startStreamRegisters(channel);
+}
+
+void VoodooGFXHDAController::stopStream(Channel *channel)
+{
+	if (!ownsChannel(channel))
+		return;
+
+	stopStreamRegisters(channel);
+
+	if (channel->buffer)
+		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
+}
+
+bool VoodooGFXHDAController::serviceStreams()
+{
+	bool active = false;
+
+	for (int i = 0; i < mNumStreams; i++) {
+		VoodooGFXHDAStream *stream = mStreams[i].stream;
+		if (!stream || !stream->hasActiveTimingPoll())
+			continue;
+		active = true;
+		stream->pollTimingProgress();
+	}
+
+	return active;
+}
+
+void VoodooGFXHDAController::handleStreamInterrupt(Channel *channel, UInt32 status)
+{
+	VoodooGFXHDAStream *stream = lookupStream(channel);
+
+	if (!stream)
+		return;
+
+	stream->serviceInterrupt(status);
 }
 
 void VoodooGFXHDAController::updateTiming(Channel *channel, bool active, bool primeNow)
@@ -387,4 +540,130 @@ void VoodooGFXHDAController::scheduleTimingPoll()
 VoodooHDADevice *VoodooGFXHDAController::getDevice() const
 {
 	return mDevice;
+}
+
+int VoodooGFXHDAController::allocateBdlMemory(Channel *channel)
+{
+	PcmDevice *pcmDevice = channel->pcmDevice;
+
+	ASSERT(pcmDevice);
+	ASSERT(pcmDevice->chanNumBlocks);
+
+	channel->bdlMem = mDevice->allocateDmaMemory(sizeof(BdlEntry) * pcmDevice->chanNumBlocks,
+	                                             "bdlMem", kIOMapWriteThruCache);
+	if (!channel->bdlMem) {
+		mDevice->errorMsg("error: couldn't allocate HDMI/DP bdl\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+void VoodooGFXHDAController::setupBdl(Channel *channel)
+{
+	BdlEntry *bdlEntry;
+	UInt64 addr;
+	UInt32 blockSize, numBlocks;
+
+	addr = (UInt64)channel->buffer->physAddr;
+	bdlEntry = (BdlEntry *)channel->bdlMem->virtAddr;
+	blockSize = channel->blockSize;
+	numBlocks = channel->numBlocks;
+
+	for (UInt32 n = 1; n <= numBlocks; n++, bdlEntry++) {
+		bdlEntry->addrl = (UInt32)addr;
+		bdlEntry->addrh = (UInt32)(addr >> 32);
+		bdlEntry->len = ((n == numBlocks) ? (blockSize - channel->slack) : blockSize);
+		bdlEntry->ioc = (n == numBlocks);
+		addr += bdlEntry->len;
+	}
+
+	mDevice->writeData32(channel->off + HDAC_SDCBL, blockSize * numBlocks - channel->slack);
+	mDevice->writeData16(channel->off + HDAC_SDLVI, numBlocks - 1);
+	addr = channel->bdlMem->physAddr;
+	mDevice->writeData32(channel->off + HDAC_SDBDPL, (UInt32)addr);
+	mDevice->writeData32(channel->off + HDAC_SDBDPU, (UInt32)(addr >> 32));
+	if (channel->dmaPos && !(mDevice->readData32(HDAC_DPIBLBASE) & 0x00000001)) {
+		addr = mDevice->mDmaPosMem->physAddr;
+		mDevice->writeData32(HDAC_DPIBLBASE, ((UInt32)addr & HDAC_DPLBASE_DPLBASE_MASK) | 0x00000001);
+		mDevice->writeData32(HDAC_DPIBUBASE, (UInt32)(addr >> 32));
+	}
+}
+
+void VoodooGFXHDAController::stopStreamRegisters(Channel *channel)
+{
+	UInt32 ctl;
+
+	ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
+	ctl &= ~(HDAC_SDCTL_IOCE | HDAC_SDCTL_FEIE | HDAC_SDCTL_DEIE | HDAC_SDCTL_RUN);
+	mDevice->writeData8(channel->off + HDAC_SDCTL0, ctl);
+
+	channel->flags &= ~HDAC_CHN_RUNNING;
+
+	ctl = mDevice->readData32(HDAC_INTCTL);
+	ctl &= ~(1 << (channel->off >> 5));
+	mDevice->writeData32(HDAC_INTCTL, ctl);
+}
+
+void VoodooGFXHDAController::startStreamRegisters(Channel *channel)
+{
+	UInt32 ctl;
+
+	channel->flags |= HDAC_CHN_RUNNING;
+
+	ctl = mDevice->readData32(HDAC_INTCTL);
+	ctl |= 1 << (channel->off >> 5);
+	mDevice->writeData32(HDAC_INTCTL, ctl);
+	mDevice->writeData8(channel->off + HDAC_SDSTS, HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE | HDAC_SDSTS_BCIS);
+
+	if (channel->stripectl) {
+		ctl = mDevice->readData8(channel->off + HDAC_SDCTL2);
+		ctl &= ~HDAC_SDCTL2_STRIPE_MASK;
+		ctl |= channel->stripectl << HDAC_SDCTL2_STRIPE_SHIFT;
+		mDevice->writeData8(channel->off + HDAC_SDCTL2, ctl);
+	}
+
+	ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
+	ctl |= HDAC_SDCTL_IOCE | HDAC_SDCTL_FEIE | HDAC_SDCTL_DEIE | HDAC_SDCTL_RUN;
+	mDevice->writeData8(channel->off + HDAC_SDCTL0, ctl);
+}
+
+void VoodooGFXHDAController::resetStreamRegisters(Channel *channel)
+{
+	int timeout = 1000;
+	int to = timeout;
+	UInt32 ctl;
+
+	ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
+	ctl |= HDAC_SDCTL_SRST;
+	mDevice->writeData8(channel->off + HDAC_SDCTL0, ctl);
+	do {
+		ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
+		if (ctl & HDAC_SDCTL_SRST)
+			break;
+		IODelay(10);
+	} while (--to);
+	if (!(ctl & HDAC_SDCTL_SRST))
+		mDevice->errorMsg("timeout in HDMI/DP reset\n");
+	ctl &= ~HDAC_SDCTL_SRST;
+	mDevice->writeData8(channel->off + HDAC_SDCTL0, ctl);
+	to = timeout;
+	do {
+		ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
+		if (!(ctl & HDAC_SDCTL_SRST))
+			break;
+		IODelay(10);
+	} while (--to);
+	if (ctl & HDAC_SDCTL_SRST)
+		mDevice->errorMsg("can't reset HDMI/DP stream!\n");
+}
+
+void VoodooGFXHDAController::setStreamId(Channel *channel)
+{
+	UInt32 ctl;
+
+	ctl = mDevice->readData8(channel->off + HDAC_SDCTL2);
+	ctl &= ~(HDAC_SDCTL2_STRM_MASK | HDAC_SDCTL2_STRIPE_MASK);
+	ctl |= channel->streamId << HDAC_SDCTL2_STRM_SHIFT;
+	mDevice->writeData8(channel->off + HDAC_SDCTL2, ctl);
 }
