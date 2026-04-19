@@ -1710,12 +1710,6 @@ void VoodooHDADevice::scheduleDigitalHDMIPoll()
 		mTimerSource->setTimeoutMS(kVoodooHDADigitalPollIntervalMs);
 }
 
-void VoodooHDADevice::updateDigitalHDMITiming(Channel *channel, bool active, bool primeNow)
-{
-	if (mGFXController)
-		mGFXController->updateTiming(channel, active, primeNow);
-}
-
 /******************************************************************************************/
 /******************************************************************************************/
 
@@ -2856,7 +2850,8 @@ void VoodooHDADevice::channelStop(Channel *channel, const bool shouldLock)
 	if (shouldLock)
 		LOCK();
 
-	updateDigitalHDMITiming(channel, false);
+	if (mGFXController)
+		mGFXController->updateTiming(channel, false, false);
 
 	if (channel->pcmDevice && channel->pcmDevice->digital >= 2) {
 		nid_t pin = getHDMIPinForChannel(channel);
@@ -2919,7 +2914,8 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 	streamSetId(channel);
 	streamSetup(channel);
 	streamStart(channel);
-	updateDigitalHDMITiming(channel, true, true);
+	if (mGFXController)
+		mGFXController->updateTiming(channel, true, true);
 
 	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 && mFBNotifier) {
 		nid_t pin = getHDMIPinForChannel(channel);
@@ -2952,15 +2948,6 @@ int VoodooHDADevice::channelGetPosition(Channel *channel)
 #endif
 
 	return position;
-}
-
-UInt32 VoodooHDADevice::channelGetLinkPosition(Channel *channel, bool *valid)
-{
-	if (mGFXController)
-		return mGFXController->getLinkPosition(channel, valid);
-	if (valid)
-		*valid = false;
-	return 0;
 }
 
 static
@@ -3126,17 +3113,11 @@ void VoodooHDADevice::streamSetup(Channel *channel)
 			cchn = min(cchn, totalchn - chn - 1);
 			sendCommand(HDA_CMD_SET_CONV_CHAN_COUNT(cad, channel->io[i], cchn), cad);
 		}
-		if (HDA_PARAM_AUDIO_WIDGET_CAP_DIGITAL(widget->params.widgetCap))
-			streamHDMIorDPExtraSetup(channel, channel->io[i], assoc, totalchn, totalextchn);
+		if (HDA_PARAM_AUDIO_WIDGET_CAP_DIGITAL(widget->params.widgetCap) && mGFXController)
+			mGFXController->setupStream(channel, channel->io[i], assoc, totalchn, totalextchn);
 
 		chn += cchn + 1;
 	}
-}
-
-void VoodooHDADevice::streamHDMIorDPExtraSetup(Channel *channel, nid_t dac, AudioAssoc *assoc, int totalchn, int totalext)
-{
-	if (mGFXController)
-		mGFXController->setupStream(channel, dac, assoc, totalchn, totalext);
 }
 
 void VoodooHDADevice::streamStop(Channel *channel)

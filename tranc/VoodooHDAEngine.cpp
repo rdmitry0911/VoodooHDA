@@ -86,9 +86,6 @@ bool VoodooHDAEngine::initWithChannel(Channel *channel)
 
 	mChannel = channel;
 	mDigitalStream = NULL;
-	mDigitalTimingPollActive = false;
-	mHasDigitalPosition = false;
-	mLastDigitalPosition = 0;
 
 	result = true;
 done:
@@ -849,10 +846,6 @@ void VoodooHDAEngine::resetDigitalTimingState()
 {
 	if (mDigitalStream)
 		mDigitalStream->resetTimingState();
-	else {
-		mHasDigitalPosition = false;
-		mLastDigitalPosition = 0;
-	}
 }
 
 bool VoodooHDAEngine::pollDigitalTimingProgress()
@@ -865,23 +858,11 @@ UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 	/* AppleGFXHDAEngine::getCurrentSampleFrame clamps to [0, numSampleFrames):
 	 * if frame >= numSampleFrames it returns 0, guarding against SDLPIB glitches. */
 	UInt32 position;
-	bool valid = false;
 
 	if (mDigitalStream)
 		return mDigitalStream->getCurrentSampleFrame();
 
-	/* Digital streams keep their own link-position cache updated from the
-	 * SDLPIB polling path, instead of sampling the generic channel position
-	 * directly on every IOAudioEngine query. */
-	if (usesDigitalTimingPoll() && mHasDigitalPosition)
-		position = mLastDigitalPosition;
-	else if (usesDigitalTimingPoll()) {
-		position = mDevice->channelGetLinkPosition(mChannel, &valid);
-		if (!valid)
-			return 0;
-	}
-	else
-		position = static_cast<UInt32>(mDevice->channelGetPosition(mChannel));
+	position = static_cast<UInt32>(mDevice->channelGetPosition(mChannel));
 
 	UInt32 frame = position / mSampleSize;
 	return (frame < mNumSampleFrames) ? frame : 0;

@@ -253,7 +253,6 @@ public:
 	VoodooHDAEngine *lookupEngine(int channelId);
 	void handleChannelInterrupt(int channelId);
 	void scheduleDigitalHDMIPoll();
-	void updateDigitalHDMITiming(Channel *channel, bool active, bool primeNow = false);
 
 	UInt32 sendCommand(UInt32 verb, nid_t cad);
 	void sendCommands(CommandList *commands, nid_t cad);
@@ -361,10 +360,8 @@ public:
 	void channelStop(Channel *channel, bool shouldLock = true);
 	void channelStart(Channel *channel, bool shouldLock = true);
 	int channelGetPosition(Channel *channel);
-	UInt32 channelGetLinkPosition(Channel *channel, bool *valid = NULL);
 
 	void streamSetup(Channel *channel);
-	void streamHDMIorDPExtraSetup(Channel *channel, nid_t, AudioAssoc*, int, int);
 	void streamStop(Channel *channel);
 	void streamStart(Channel *channel);
 	void streamReset(Channel *channel);

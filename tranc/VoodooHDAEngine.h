@@ -34,9 +34,6 @@ public:
 	VoodooGFXHDAStream *mDigitalStream;
 	IOAudioStream *mStream;
 	bool emptyStream;
-	bool mDigitalTimingPollActive;
-	bool mHasDigitalPosition;
-	UInt32 mLastDigitalPosition;
 
 	const char *mPortName;
 	char mPortNameBuf[64];
