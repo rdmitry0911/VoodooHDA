@@ -85,11 +85,7 @@ public:
 
 	void recalculateSampleOffsets(UInt32 sampleRate);
 	bool usesDigitalTimingPoll();
-	bool hasActiveDigitalTimingPoll();
-	void armDigitalTimingPoll();
-	void disarmDigitalTimingPoll();
 	void resetDigitalTimingState();
-	bool pollDigitalTimingProgress();
 
 	virtual IOReturn performFormatChange(IOAudioStream *audioStream, const IOAudioStreamFormat *newFormat,
 			const IOAudioSampleRate *newSampleRate) override;

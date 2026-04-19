@@ -179,30 +179,6 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 #define	PCI_CLASS_MULTI				0x04
 #define PCI_SUBCLASS_MULTI_HDA		0x03
 
-static UInt32 appleGfxHdaAmdMemoryDescCoeff(UInt32 controllerId)
-{
-	UInt16 vendorId = controllerId & 0xffff;
-	UInt16 deviceId = (controllerId >> 16) & 0xffff;
-
-	if (vendorId != ATI_VENDORID)
-		return 0;
-
-	/* Extracted from AppleGFXHDA's controller table in __TEXT,__const.
-	 * All AMD GPU HDA controllers present there use coefficient 0x3000. */
-	switch (deviceId) {
-		case 0xaae0:
-		case 0xaaf0:
-		case 0xaaf8:
-		case 0xab20:
-		case 0xab28:
-		case 0xab38:
-		case 0xabf8:
-			return 0x3000;
-		default:
-			return 0;
-	}
-}
-
 void VoodooHDADevice::initMixerDefaultValues(void)
 {
 	OSDictionary *MixerValues = 0;
@@ -2305,10 +2281,13 @@ int VoodooHDADevice::handleStreamInterrupt(Channel *channel)
 
 	/* HDMI/DP playback no longer advances IOAudioEngine timing from BCIS.
 	 * Keep handling/clearing stream status here, but route digital progress
-	 * exclusively through the SDLPIB polling layer. */
+	 * through the controller-owned GFXHDA service path. */
 	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 &&
-	    channel->direction == PCMDIR_PLAY)
+	    channel->direction == PCMDIR_PLAY) {
+		if (mGFXController)
+			mGFXController->handleStreamInterrupt(channel, res);
 		return 0;
+	}
 
 	/* Apple GFXHDA behavior: only BCIS triggers the completion callback
 	 * ((sdsts & 0x1c) == 4).  AMD/ATI HDA controllers spuriously assert FIFOE
@@ -2380,24 +2359,13 @@ __attribute__((visibility("hidden")))
 void VoodooHDADevice::timeoutOccurred(OSObject *owner, IOTimerEventSource *source)
 {
 	VoodooHDADevice *device = OSDynamicCast(VoodooHDADevice, owner);
-	OSCollectionIterator *engineIter;
-	VoodooHDAEngine *engine = NULL;
 	bool activeDigitalPoll = false;
 
 	if (!device)
 		return;
 
-	engineIter = OSCollectionIterator::withCollection(device->audioEngines);
-	if (engineIter) {
-		engineIter->reset();
-		while ((engine = OSDynamicCast(VoodooHDAEngine, engineIter->getNextObject()))) {
-			if (!engine->hasActiveDigitalTimingPoll())
-				continue;
-			activeDigitalPoll = true;
-			engine->pollDigitalTimingProgress();
-		}
-		RELEASE(engineIter);
-	}
+	if (device->mGFXController)
+		activeDigitalPoll = device->mGFXController->serviceStreams();
 
 	if (!activeDigitalPoll && device->mVerbose >= 3)
 		device->logMsg("total interrupts: %lld (%lld channel interrupts)\n", device->mTotalInt,

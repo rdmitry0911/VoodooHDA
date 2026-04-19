@@ -825,32 +825,10 @@ bool VoodooHDAEngine::usesDigitalTimingPoll()
 	return mDigitalStream != NULL;
 }
 
-bool VoodooHDAEngine::hasActiveDigitalTimingPoll()
-{
-	return mDigitalStream && mDigitalStream->hasActiveTimingPoll();
-}
-
-void VoodooHDAEngine::armDigitalTimingPoll()
-{
-	if (mDigitalStream)
-		mDigitalStream->armTimingPoll();
-}
-
-void VoodooHDAEngine::disarmDigitalTimingPoll()
-{
-	if (mDigitalStream)
-		mDigitalStream->disarmTimingPoll();
-}
-
 void VoodooHDAEngine::resetDigitalTimingState()
 {
 	if (mDigitalStream)
 		mDigitalStream->resetTimingState();
-}
-
-bool VoodooHDAEngine::pollDigitalTimingProgress()
-{
-	return mDigitalStream ? mDigitalStream->pollTimingProgress() : false;
 }
 
 UInt32 VoodooHDAEngine::getCurrentSampleFrame()
