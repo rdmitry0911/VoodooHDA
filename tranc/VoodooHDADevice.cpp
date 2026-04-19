@@ -2290,6 +2290,13 @@ int VoodooHDADevice::handleStreamInterrupt(Channel *channel)
 
 	writeData8(channel->off + HDAC_SDSTS, HDAC_SDSTS_DESE | HDAC_SDSTS_FIFOE | HDAC_SDSTS_BCIS);
 
+	/* HDMI/DP playback no longer advances IOAudioEngine timing from BCIS.
+	 * Keep handling/clearing stream status here, but route digital progress
+	 * exclusively through the SDLPIB polling layer. */
+	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 &&
+	    channel->direction == PCMDIR_PLAY)
+		return 0;
+
 	/* Apple GFXHDA behavior: only BCIS triggers the completion callback
 	 * ((sdsts & 0x1c) == 4).  AMD/ATI HDA controllers spuriously assert FIFOE
 	 * during normal HDMI playback (SDSTS=0x28); treating FIFOE as a completion

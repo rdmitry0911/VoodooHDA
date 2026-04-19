@@ -861,7 +861,17 @@ UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 {
 	/* AppleGFXHDAEngine::getCurrentSampleFrame clamps to [0, numSampleFrames):
 	 * if frame >= numSampleFrames it returns 0, guarding against SDLPIB glitches. */
-	UInt32 frame = mDevice->channelGetPosition(mChannel) / mSampleSize;
+	UInt32 position;
+
+	/* Digital streams keep their own link-position cache updated from the
+	 * SDLPIB polling path, instead of sampling the generic channel position
+	 * directly on every IOAudioEngine query. */
+	if (usesDigitalTimingPoll() && mHasDigitalPosition)
+		position = mLastDigitalPosition;
+	else
+		position = static_cast<UInt32>(mDevice->channelGetPosition(mChannel));
+
+	UInt32 frame = position / mSampleSize;
 	return (frame < mNumSampleFrames) ? frame : 0;
 }
 
