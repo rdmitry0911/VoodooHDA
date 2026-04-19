@@ -841,12 +841,20 @@ void VoodooHDAEngine::disarmDigitalTimingPoll()
 bool VoodooHDAEngine::pollDigitalTimingProgress()
 {
 	UInt32 position;
+	UInt32 frame;
 
 	if (!mDigitalTimingPollActive || !usesDigitalTimingPoll() || !mDevice || !mChannel ||
 	    !(mChannel->flags & HDAC_CHN_RUNNING))
 		return false;
 
 	position = static_cast<UInt32>(mDevice->channelGetPosition(mChannel));
+	if (position >= mBufferSize || mSampleSize == 0)
+		return false;
+
+	frame = position / mSampleSize;
+	if (frame >= mNumSampleFrames)
+		return false;
+
 	if (!mHasDigitalPosition || position != mLastDigitalPosition) {
 		mLastDigitalPosition = position;
 		mHasDigitalPosition = true;
