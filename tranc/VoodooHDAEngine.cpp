@@ -855,6 +855,28 @@ bool VoodooHDAEngine::usesAppleGfxClipPath() const
 	       mChannel->pcmDevice->digital >= 2;
 }
 
+IOReturn VoodooHDAEngine::eraseOutputSamples(const void *mixBuf, void *sampleBuf, UInt32 firstSampleFrame,
+											 UInt32 numSampleFrames, const IOAudioStreamFormat *streamFormat,
+											 __unused IOAudioStream *audioStream)
+{
+	/* Match AppleGFXHDAEngine::eraseOutputSamples(): zero the float mix region and
+	 * the published sample-buffer region explicitly rather than inheriting the base hook implicitly. */
+	if (mixBuf && streamFormat) {
+		UInt32 firstSample = firstSampleFrame * streamFormat->fNumChannels;
+		UInt32 numSamples = numSampleFrames * streamFormat->fNumChannels;
+		bzero(const_cast<float *>(reinterpret_cast<const float *>(mixBuf)) + firstSample,
+		      numSamples * sizeof(float));
+	}
+
+	if (sampleBuf && streamFormat) {
+		UInt32 offset = firstSampleFrame * (streamFormat->fBitWidth / 8) * streamFormat->fNumChannels;
+		UInt32 size = numSampleFrames * (streamFormat->fBitWidth / 8) * streamFormat->fNumChannels;
+		bzero(reinterpret_cast<UInt8 *>(sampleBuf) + offset, size);
+	}
+
+	return kIOReturnSuccess;
+}
+
 IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 											  const IOAudioStreamFormat *newFormat,
 											  const IOAudioSampleRate *newSampleRate)

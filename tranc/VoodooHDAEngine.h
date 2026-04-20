@@ -83,6 +83,8 @@ public:
 
 	virtual UInt32 getCurrentSampleFrame() override;
 	virtual void resetClipPosition(IOAudioStream *audioStream, UInt32 clipSampleFrame) override;
+	virtual IOReturn eraseOutputSamples(const void *mixBuf, void *sampleBuf, UInt32 firstSampleFrame,
+			UInt32 numSampleFrames, const IOAudioStreamFormat *streamFormat, IOAudioStream *audioStream) override;
 
 	void recalculateSampleOffsets(UInt32 sampleRate);
 	bool usesAppleGfxClipPath() const;
