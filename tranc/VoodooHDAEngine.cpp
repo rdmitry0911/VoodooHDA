@@ -774,9 +774,7 @@ IOReturn VoodooHDAEngine::performAudioEngineStart()
 	// appear longer than it is; at the first BCIS the loop-count increment causes a timing
 	// discontinuity → crackle.
 	mDevice->channelStart(mChannel);
-	if (!mDigitalStream) {
-		takeTimeStamp(false);
-	}
+	takeTimeStamp(false);
 
 	return kIOReturnSuccess;
 }

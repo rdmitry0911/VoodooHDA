@@ -28,8 +28,7 @@ static UInt32 appleGfxHdaAmdMemoryDescCoeff(UInt32 controllerId)
 }
 
 VoodooGFXHDAStream::VoodooGFXHDAStream()
-	: mController(NULL), mEngine(NULL), mChannel(NULL),
-	  mActive(false), mHasPosition(false), mLastPosition(0)
+	: mController(NULL), mEngine(NULL), mChannel(NULL), mActive(false)
 {
 }
 
@@ -64,51 +63,29 @@ void VoodooGFXHDAStream::deactivate()
 
 void VoodooGFXHDAStream::resetPositionState()
 {
-	mHasPosition = false;
-	mLastPosition = 0;
 }
 
-bool VoodooGFXHDAStream::refreshPosition(bool emitTimestamp)
+void VoodooGFXHDAStream::serviceInterrupt(UInt32 status, AbsoluteTime *timeStamp)
 {
-	UInt32 position;
-	bool valid = false;
-
-	if (!mActive || !mController || !mEngine || !mChannel ||
-	    !(mChannel->flags & HDAC_CHN_RUNNING))
-		return false;
-
-	position = mController->getLinkPosition(mChannel, &valid);
-	if (!valid)
-		return false;
-
-	if (!mHasPosition || position != mLastPosition) {
-		mLastPosition = position;
-		mHasPosition = true;
-		if (emitTimestamp)
-			mEngine->takeTimeStamp(false);
-		return true;
-	}
-
-	return false;
-}
-
-void VoodooGFXHDAStream::serviceInterrupt(UInt32 status)
-{
-	if (!(status & HDAC_SDSTS_BCIS))
+	if (!mActive || !mEngine || !(status & HDAC_SDSTS_BCIS))
 		return;
 
-	refreshPosition(true);
+	mEngine->takeTimeStamp(true, timeStamp);
 }
 
 UInt32 VoodooGFXHDAStream::getCurrentSampleFrame()
 {
 	UInt32 position;
 	UInt32 frame;
+	bool valid = false;
 
-	refreshPosition(false);
-	if (!mHasPosition)
+	if (!mController || !mEngine || !mChannel || !mActive ||
+	    !(mChannel->flags & HDAC_CHN_RUNNING))
 		return 0;
-	position = mLastPosition;
+
+	position = mController->getLinkPosition(mChannel, &valid);
+	if (!valid)
+		return 0;
 
 	if (!mEngine->mSampleSize)
 		return 0;
@@ -272,14 +249,14 @@ void VoodooGFXHDAController::stopStream(Channel *channel)
 		bzero(reinterpret_cast<void *>(channel->buffer->virtAddr), channel->buffer->size);
 }
 
-void VoodooGFXHDAController::handleStreamInterrupt(Channel *channel, UInt32 status)
+void VoodooGFXHDAController::handleStreamInterrupt(Channel *channel, UInt32 status, AbsoluteTime *timeStamp)
 {
 	VoodooGFXHDAStream *stream = lookupStream(channel);
 
 	if (!stream)
 		return;
 
-	stream->serviceInterrupt(status);
+	stream->serviceInterrupt(status, timeStamp);
 }
 
 void VoodooGFXHDAController::updateTiming(Channel *channel, bool active, bool primeNow)
@@ -296,7 +273,7 @@ void VoodooGFXHDAController::updateTiming(Channel *channel, bool active, bool pr
 
 	stream->activate();
 	if (primeNow)
-		stream->refreshPosition(true);
+		stream->resetPositionState();
 }
 
 UInt32 VoodooGFXHDAController::getLinkPosition(Channel *channel, bool *valid)

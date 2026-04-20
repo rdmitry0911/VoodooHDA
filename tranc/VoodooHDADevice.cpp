@@ -2278,7 +2278,8 @@ int VoodooHDADevice::handleStreamInterrupt(Channel *channel)
 	if (channel->pcmDevice && channel->pcmDevice->digital >= 2 &&
 	    channel->direction == PCMDIR_PLAY) {
 		if (mGFXController)
-			mGFXController->handleStreamInterrupt(channel, res);
+			mGFXController->handleStreamInterrupt(channel, res,
+				reinterpret_cast<AbsoluteTime*>(&mIntrTimeStamp));
 		return 0;
 	}
 

@@ -22,8 +22,7 @@ public:
 	void activate();
 	void deactivate();
 	void resetPositionState();
-	bool refreshPosition(bool emitTimestamp);
-	void serviceInterrupt(UInt32 status);
+	void serviceInterrupt(UInt32 status, AbsoluteTime *timeStamp);
 	UInt32 getCurrentSampleFrame();
 
 private:
@@ -31,8 +30,6 @@ private:
 	VoodooHDAEngine *mEngine;
 	Channel *mChannel;
 	bool mActive;
-	bool mHasPosition;
-	UInt32 mLastPosition;
 };
 
 class VoodooGFXHDAController
@@ -49,7 +46,7 @@ public:
 	void prepareStreamDMA(Channel *channel);
 	void startStream(Channel *channel);
 	void stopStream(Channel *channel);
-	void handleStreamInterrupt(Channel *channel, UInt32 status);
+	void handleStreamInterrupt(Channel *channel, UInt32 status, AbsoluteTime *timeStamp);
 	void updateTiming(Channel *channel, bool active, bool primeNow);
 	UInt32 getLinkPosition(Channel *channel, bool *valid = NULL);
 	void setupStream(Channel *channel, nid_t dac, AudioAssoc *assoc, int totalchn, int totalext);
