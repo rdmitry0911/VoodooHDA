@@ -774,6 +774,8 @@ IOReturn VoodooHDAEngine::performAudioEngineStart()
 	// appear longer than it is; at the first BCIS the loop-count increment causes a timing
 	// discontinuity → crackle.
 	mDevice->channelStart(mChannel);
+	if (mDigitalStream)
+		mDigitalStream->resetClipPosition(0);
 	takeTimeStamp(false);
 
 	return kIOReturnSuccess;
@@ -833,6 +835,25 @@ UInt32 VoodooHDAEngine::getCurrentSampleFrame()
 	return (frame < mNumSampleFrames) ? frame : 0;
 }
 
+void VoodooHDAEngine::resetClipPosition(IOAudioStream *audioStream, UInt32 clipSampleFrame)
+{
+	/* AppleGFXHDAEngine overrides resetClipPosition() for its digital stream path.
+	 * Mirror that hook for HDMI/DP so IOAudioFamily clip/erase state is reset together
+	 * with the controller-owned link-position state. */
+	if (audioStream == mStream && mDigitalStream)
+		mDigitalStream->resetClipPosition(clipSampleFrame);
+
+	super::resetClipPosition(audioStream, clipSampleFrame);
+}
+
+bool VoodooHDAEngine::usesAppleGfxClipPath() const
+{
+	return mDigitalStream != NULL &&
+	       mChannel != NULL &&
+	       mChannel->direction == PCMDIR_PLAY &&
+	       mChannel->pcmDevice != NULL &&
+	       mChannel->pcmDevice->digital >= 2;
+}
 
 IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 											  const IOAudioStreamFormat *newFormat,

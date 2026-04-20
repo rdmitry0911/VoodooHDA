@@ -22,14 +22,18 @@ public:
 	void activate();
 	void deactivate();
 	void resetPositionState();
+	void resetClipPosition(UInt32 clipSampleFrame);
+	void noteClippedPosition(UInt32 nextSampleFrame);
 	void serviceInterrupt(UInt32 status, AbsoluteTime *timeStamp);
 	UInt32 getCurrentSampleFrame();
+	UInt32 getClippedPosition() const;
 
 private:
 	VoodooGFXHDAController *mController;
 	VoodooHDAEngine *mEngine;
 	Channel *mChannel;
 	bool mActive;
+	UInt32 mClippedPosition;
 };
 
 class VoodooGFXHDAController

@@ -28,7 +28,7 @@ static UInt32 appleGfxHdaAmdMemoryDescCoeff(UInt32 controllerId)
 }
 
 VoodooGFXHDAStream::VoodooGFXHDAStream()
-	: mController(NULL), mEngine(NULL), mChannel(NULL), mActive(false)
+	: mController(NULL), mEngine(NULL), mChannel(NULL), mActive(false), mClippedPosition(0)
 {
 }
 
@@ -63,6 +63,17 @@ void VoodooGFXHDAStream::deactivate()
 
 void VoodooGFXHDAStream::resetPositionState()
 {
+	mClippedPosition = 0;
+}
+
+void VoodooGFXHDAStream::resetClipPosition(UInt32 clipSampleFrame)
+{
+	mClippedPosition = clipSampleFrame;
+}
+
+void VoodooGFXHDAStream::noteClippedPosition(UInt32 nextSampleFrame)
+{
+	mClippedPosition = nextSampleFrame;
 }
 
 void VoodooGFXHDAStream::serviceInterrupt(UInt32 status, AbsoluteTime *timeStamp)
@@ -92,6 +103,11 @@ UInt32 VoodooGFXHDAStream::getCurrentSampleFrame()
 
 	frame = position / mEngine->mSampleSize;
 	return (frame < mEngine->mNumSampleFrames) ? frame : 0;
+}
+
+UInt32 VoodooGFXHDAStream::getClippedPosition() const
+{
+	return mClippedPosition;
 }
 
 VoodooGFXHDAController::VoodooGFXHDAController()

@@ -82,8 +82,10 @@ public:
 	virtual IOReturn performAudioEngineStop() override;
 
 	virtual UInt32 getCurrentSampleFrame() override;
+	virtual void resetClipPosition(IOAudioStream *audioStream, UInt32 clipSampleFrame) override;
 
 	void recalculateSampleOffsets(UInt32 sampleRate);
+	bool usesAppleGfxClipPath() const;
 
 	virtual IOReturn performFormatChange(IOAudioStream *audioStream, const IOAudioStreamFormat *newFormat,
 			const IOAudioSampleRate *newSampleRate) override;
