@@ -23,6 +23,13 @@ The current controls are:
 - `Freeze buffer after first fill`
 - `Skip eraseOutputSamples`
 - `Bypass Voodoo processing`
+- `Skip framebuffer ELD`
+- `Force any-framebuffer ELD`
+- `Force ATI ELD verbs`
+- `Skip framebuffer audio pipe`
+- `Dump GPU AZ/MMIO on stream`
+- `Force standard HDA/DIP path`
+- `Force ATI vendor HDMI path`
 - `Verbose logging`
 
 `Inject tone direct to sample buffer` has priority over `Inject tone in mix buffer`.
@@ -105,6 +112,49 @@ Recommended usage:
 - use `Level 1` or `Level 2` for normal field logs
 - use higher levels only for short captures, because they add log noise and timing pressure
 
+### 7. ELD Source Check
+
+Start from normal playback, without tone injection, and enable one option at a time:
+- `Skip framebuffer ELD`
+- `Force any-framebuffer ELD`
+- `Force ATI ELD verbs`
+
+Interpretation:
+- if playback works only with `Skip framebuffer ELD`, the injected framebuffer ELD is likely wrong for this sink or pin mapping
+- if playback works only with `Force any-framebuffer ELD`, the exact framebuffer-to-pin match is wrong, but another connector already has usable ELD
+- if playback works only with `Force ATI ELD verbs`, the framebuffer ELD path is the broken branch and the ATI verb path is healthier on this card
+
+### 8. Audio Pipe Check
+
+Enable:
+- `Skip framebuffer audio pipe`
+
+Interpretation:
+- if nothing changes, the framebuffer audio pipe enable path is probably not the root cause
+- if the behavior changes sharply, the Apple framebuffer `kConnectionEnableAudio` path is part of the failure
+
+### 9. HDMI Programming Path Check
+
+Use normal playback and try:
+- `Force standard HDA/DIP path`
+- `Force ATI vendor HDMI path`
+
+Interpretation:
+- if only `Force standard HDA/DIP path` works, the ATI vendor verb path is the suspect
+- if only `Force ATI vendor HDMI path` works, the standard HDA DIP path is the suspect
+- if both fail the same way, the failure is likely below the final InfoFrame programming branch
+
+### 10. GPU MMIO Snapshot
+
+Enable:
+- `Dump GPU AZ/MMIO on stream`
+
+Use this only while reproducing the fault.
+
+Interpretation:
+- the driver will dump the selected GPU register table and current AZ/AFMT/DP state around stream setup
+- this is intended to compare working vs failing cards and verify that the driver selected the expected Polaris/Vega MMIO table
+
 ## Fast Diagnosis Matrix
 
 `Direct tone + prime + freeze` works:
@@ -122,6 +172,15 @@ Recommended usage:
 `Mix tone` or `Direct tone` works only with `Skip eraseOutputSamples`:
 - the erase path is clearing live audio data
 
+Playback changes only with `Skip framebuffer ELD` or `Force ATI ELD verbs`:
+- the sink-data / ELD branch is wrong
+
+Playback changes only with `Skip framebuffer audio pipe`:
+- the framebuffer audio-pipe enable path is involved
+
+Playback changes only with `Force standard HDA/DIP path` or `Force ATI vendor HDMI path`:
+- the final HDMI programming branch is wrong
+
 Nothing works, even with direct tone:
 - the fault is below the software fill path
 
@@ -130,6 +189,8 @@ Nothing works, even with direct tone:
 When collecting a field log, always include:
 - driver commit id shown in the driver log
 - selected channel name and whether it is `HDMI` or `DP`
+- selected diagnostics path for ELD (`framebuffer`, `any-framebuffer`, `ATI verbs`, or `skip framebuffer`)
+- selected HDMI programming path (`auto`, `standard`, or `ATI vendor`)
 - sample rate
 - bit depth / format
 - the exact diagnostic flags used
