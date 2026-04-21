@@ -12,7 +12,16 @@ OSDefineMetaClassAndStructors(VoodooHDAFramebufferNotifier, OSObject)
 #undef super
 #define super OSObject
 
-#define FBLOG(fmt, ...) IOLog("VoodooHDA FB: " fmt "\n", ##__VA_ARGS__)
+#if VOODOO_HDA_DEBUG_BUILD
+#define FBLOG_OWNER(owner, fmt, ...) do { \
+	if ((owner) && (owner)->mDevice && (owner)->mDevice->mVerbose >= 1) \
+		IOLog("VoodooHDA FB: " fmt "\n", ##__VA_ARGS__); \
+} while (0)
+#define FBLOG(fmt, ...) FBLOG_OWNER(this, fmt, ##__VA_ARGS__)
+#else
+#define FBLOG_OWNER(owner, fmt, ...) do {} while (0)
+#define FBLOG(fmt, ...) do {} while (0)
+#endif
 
 /* ---------- lifecycle ---------- */
 
@@ -208,8 +217,8 @@ bool VoodooHDAFramebufferNotifier::gfxMatchedHandler(
 	VoodooHDAFramebufferNotifier *self = (VoodooHDAFramebufferNotifier *)target;
 	if (!newService) return true;
 
-	FBLOG("gfxMatchedHandler: service=%p class=%s",
-	      newService, newService->getMetaClass()->getClassName());
+	FBLOG_OWNER(self, "gfxMatchedHandler: service=%p class=%s",
+		    newService, newService->getMetaClass()->getClassName());
 
 	if (!self->isSameGPU(newService)) return true;
 
@@ -245,7 +254,7 @@ bool VoodooHDAFramebufferNotifier::displayMatchedHandler(
 	IOLockLock(self->mLock);
 	FBConnectionState *conn = self->findConnection(fb);
 	if (conn && !conn->edidValid) {
-		FBLOG("displayMatched: IODisplay for pin=%d, reading EDID", conn->mappedPinNid);
+		FBLOG_OWNER(self, "displayMatched: IODisplay for pin=%d, reading EDID", conn->mappedPinNid);
 
 		if (conn->edidData) {
 			IOFree(conn->edidData, conn->edidLen);
@@ -255,7 +264,7 @@ bool VoodooHDAFramebufferNotifier::displayMatchedHandler(
 		conn->edidData = (uint8_t *)IOMalloc(conn->edidLen);
 		if (conn->edidData) {
 			memcpy(conn->edidData, edidProp->getBytesNoCopy(), conn->edidLen);
-			FBLOG("displayMatched: pin=%d got %d bytes EDID", conn->mappedPinNid, conn->edidLen);
+			FBLOG_OWNER(self, "displayMatched: pin=%d got %d bytes EDID", conn->mappedPinNid, conn->edidLen);
 
 			if (self->parseEDIDAudio(conn)) {
 				self->buildELDFromEDID(conn);
@@ -272,8 +281,8 @@ bool VoodooHDAFramebufferNotifier::displayMatchedHandler(
 				self->injectELDIntoWidget(conn);
 				self->injectELDIntoAllPinsWithPresence(conn);
 
-				FBLOG("displayMatched: pin=%d spkalloc=0x%02x nsads=%d pipe enabled",
-				      conn->mappedPinNid, conn->speakerAllocation, conn->numSADs);
+				FBLOG_OWNER(self, "displayMatched: pin=%d spkalloc=0x%02x nsads=%d pipe enabled",
+					    conn->mappedPinNid, conn->speakerAllocation, conn->numSADs);
 
 				/* Try to enable GPU audio engine via direct MMIO */
 				self->initGPUAudioIfNeeded();
@@ -386,7 +395,7 @@ IOReturn VoodooHDAFramebufferNotifier::interestHandler(
 	 * (including IODisplayEDID). This is our trigger to re-read EDID.
 	 */
 	if (messageType == kIOMessageServicePropertyChange) {
-		FBLOG("interestHandler: PropertyChange fb=%p pin=%d", provider, conn->mappedPinNid);
+		FBLOG_OWNER(self, "interestHandler: PropertyChange fb=%p pin=%d", provider, conn->mappedPinNid);
 		IOLockLock(self->mLock);
 		if (self->readEDID(conn) && self->parseEDIDAudio(conn)) {
 			self->buildELDFromEDID(conn);
@@ -394,12 +403,12 @@ IOReturn VoodooHDAFramebufferNotifier::interestHandler(
 			conn->displayOnline = true;
 			self->enableAudioPipe(conn);
 			self->injectELDIntoWidget(conn);
-			FBLOG("interestHandler: EDID updated, spkalloc=0x%02x nsads=%d",
-			      conn->speakerAllocation, conn->numSADs);
+			FBLOG_OWNER(self, "interestHandler: EDID updated, spkalloc=0x%02x nsads=%d",
+				    conn->speakerAllocation, conn->numSADs);
 		}
 		IOLockUnlock(self->mLock);
 	} else if (messageType == kIOMessageServiceIsTerminated) {
-		FBLOG("interestHandler: service terminated fb=%p pin=%d", provider, conn->mappedPinNid);
+		FBLOG_OWNER(self, "interestHandler: service terminated fb=%p pin=%d", provider, conn->mappedPinNid);
 	}
 
 	return kIOReturnSuccess;

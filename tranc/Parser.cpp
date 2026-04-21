@@ -4877,9 +4877,9 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 		if (HDA_PARAM_AUDIO_WIDGET_CAP_UNSOL_CAP(widget->params.widgetCap)) {
 			sendCommand(HDA_CMD_SET_UNSOLICITED_RESPONSE(cad, j,
 					HDA_CMD_SET_UNSOLICITED_RESPONSE_ENABLE | HDAC_UNSOLTAG_EVENT_HP), cad);
-			IOLog("VoodooHDA DBG: switchInit registered unsol response for nid=%d (HDMI=%d DP=%d)\n",
-				  j, HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) ? 1 : 0,
-				  HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ? 1 : 0);
+			logMsg("switchInit registered unsol response for nid=%d (HDMI=%d DP=%d)\n",
+			       j, HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) ? 1 : 0,
+			       HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ? 1 : 0);
 		}
 
 		/* Read initial presence state */
@@ -4892,7 +4892,7 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 		/* HDMI/DP pins: call ELD handler, skip HP redirect logic */
 		if (HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ||
 			HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap)) {
-			IOLog("VoodooHDA DBG: switchInit calling hdaa_eld_handler for HDMI/DP nid=%d sense=%d\n", j, res);
+			logMsg("switchInit calling hdaa_eld_handler for HDMI/DP nid=%d sense=%d\n", j, res);
 			hdaa_eld_handler(widget);
 			continue;
 		}
@@ -4959,13 +4959,13 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
       if (widget->eld) {
         memcpy(widget->eld, fbELD, fbELDLen);
         widget->eld_len = fbELDLen;
-        IOLog("VoodooHDA HDMI: nid=%d using FRAMEBUFFER ELD (%d bytes, spkalloc=0x%02x anyFallback=%d)\n",
-              nid, fbELDLen, (fbELDLen > 7) ? widget->eld[7] : 0, forceAnyFramebufferELD ? 1 : 0);
+        logMsg("HDMI nid=%d using FRAMEBUFFER ELD (%d bytes, spkalloc=0x%02x anyFallback=%d)\n",
+               nid, fbELDLen, (fbELDLen > 7) ? widget->eld[7] : 0, forceAnyFramebufferELD ? 1 : 0);
         return;
       }
     }
   } else if (skipFramebufferELD) {
-    IOLog("VoodooHDA HDMI: nid=%d skipping framebuffer ELD due to diagnostic flag\n", nid);
+    logMsg("HDMI nid=%d skipping framebuffer ELD due to diagnostic flag\n", nid);
   }
 
   res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, nid), cad);
@@ -4974,9 +4974,9 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
   bool isDP = HDA_PARAM_PIN_CAP_DP(widget->pin.cap) != 0;
   bool isHDMI = HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) != 0;
 
-  IOLog("VoodooHDA HDMI: ELD handler nid=%d ati=%d DP=%d HDMI=%d pinSense=0x%08x presence=%d ELD_VALID=%d pinCap=0x%08x pinCtrl=0x%02x\n",
-        nid, atiCodec, isDP, isHDMI, (unsigned)res, presence, eldValid,
-        (unsigned)widget->pin.cap, (unsigned)widget->pin.ctrl);
+  logMsg("HDMI ELD handler nid=%d ati=%d DP=%d HDMI=%d pinSense=0x%08x presence=%d ELD_VALID=%d pinCap=0x%08x pinCtrl=0x%02x\n",
+         nid, atiCodec, isDP, isHDMI, (unsigned)res, presence, eldValid,
+         (unsigned)widget->pin.cap, (unsigned)widget->pin.ctrl);
 
   if (!atiCodec) {
     if ((widget->eld != 0) == (eldValid))
@@ -5005,11 +5005,11 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
   uint32_t dipSize = forceATIELD ? HDA_INVALID : sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid, 0x08), cad);
   int stdEldLen = (!forceATIELD && (dipSize != HDA_INVALID)) ? (dipSize & 0xff) : 0;
 
-  IOLog("VoodooHDA HDMI: nid=%d standard DIP_SIZE(0x08) -> 0x%08x (eldLen=%d)\n",
-        nid, (unsigned)dipSize, stdEldLen);
+  logMsg("HDMI nid=%d standard DIP_SIZE(0x08) -> 0x%08x (eldLen=%d)\n",
+         nid, (unsigned)dipSize, stdEldLen);
 
   if (forceATIELD)
-    IOLog("VoodooHDA HDMI: nid=%d forcing ATI ELD emulation path due to diagnostic flag\n", nid);
+    logMsg("HDMI nid=%d forcing ATI ELD emulation path due to diagnostic flag\n", nid);
 
   if (stdEldLen > 0) {
     widget->eld_len = stdEldLen;
@@ -5023,14 +5023,14 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
           if (widget->eld[i] != 0) validBytes++;
         }
       }
-      IOLog("VoodooHDA HDMI: nid=%d standard ELD read: %d bytes, %d non-zero\n",
-            nid, stdEldLen, validBytes);
+      logMsg("HDMI nid=%d standard ELD read: %d bytes, %d non-zero\n",
+             nid, stdEldLen, validBytes);
 
       if (validBytes > 0) {
         /* Standard ELD has data — use it */
-        IOLog("VoodooHDA HDMI: nid=%d using STANDARD ELD path (version=0x%02x spkalloc=0x%02x)\n",
-              nid, (stdEldLen > 0) ? widget->eld[0] >> 3 : 0,
-              (stdEldLen > 7) ? widget->eld[7] : 0);
+        logMsg("HDMI nid=%d using STANDARD ELD path (version=0x%02x spkalloc=0x%02x)\n",
+               nid, (stdEldLen > 0) ? widget->eld[0] >> 3 : 0,
+               (stdEldLen > 7) ? widget->eld[7] : 0);
         logMsg("HDMI ELD (standard) nid=%d: %d bytes\n", nid, stdEldLen);
         for (int i = 0; i < stdEldLen; i++)
           logMsg("  eld[%d]=0x%02x\n", i, widget->eld[i]);
@@ -5038,7 +5038,7 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
       }
 
       /* Standard ELD was all zeros — fall through to ATI path */
-      IOLog("VoodooHDA HDMI: nid=%d standard ELD all zeros, trying ATI verbs\n", nid);
+      logMsg("HDMI nid=%d standard ELD all zeros, trying ATI verbs\n", nid);
       freeMem(widget->eld);
       widget->eld = NULL;
       widget->eld_len = 0;
@@ -5046,18 +5046,18 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
   }
 
   if (!atiCodec) {
-    IOLog("VoodooHDA HDMI: nid=%d not ATI codec, no fallback available\n", nid);
+    logMsg("HDMI nid=%d not ATI codec, no fallback available\n", nid);
     return;
   }
 
   /* === Attempt 2: ATI-specific ELD emulation === */
-  IOLog("VoodooHDA HDMI: nid=%d trying ATI ELD emulation verbs\n", nid);
+  logMsg("HDMI nid=%d trying ATI ELD emulation verbs\n", nid);
 
   uint32_t spkalloc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_SPEAKER_ALLOCATION, 0), cad);
   uint32_t avdelay = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_VIDEO_DELAY, 0), cad);
 
-  IOLog("VoodooHDA HDMI: nid=%d ATI SPEAKER_ALLOC=0x%08x AV_DELAY=0x%08x\n",
-        nid, (unsigned)spkalloc, (unsigned)avdelay);
+  logMsg("HDMI nid=%d ATI SPEAKER_ALLOC=0x%08x AV_DELAY=0x%08x\n",
+         nid, (unsigned)spkalloc, (unsigned)avdelay);
 
   if (spkalloc == HDA_INVALID) spkalloc = 0;
   if (avdelay == HDA_INVALID) avdelay = 0;
@@ -5069,7 +5069,7 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
     sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_SET_AUDIO_DESCRIPTOR, i), cad);
     uint32_t desc = sendCommand(ATI_CMD_12BIT(cad, nid, ATI_VERB_GET_AUDIO_DESCRIPTOR, 0), cad);
     if (i < 3) /* log first few */
-      IOLog("VoodooHDA HDMI: nid=%d ATI SAD[%d]=0x%08x\n", nid, i, (unsigned)desc);
+      logMsg("HDMI nid=%d ATI SAD[%d]=0x%08x\n", nid, i, (unsigned)desc);
     if (desc == HDA_INVALID) continue;
     uint8_t sad0 = desc & 0xff;
     if (sad0 == 0) break;
@@ -5080,8 +5080,8 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
   }
 
   bool atiDataEmpty = (spkalloc == 0) && (nsads == 0);
-  IOLog("VoodooHDA HDMI: nid=%d ATI ELD result: spkalloc=0x%02x nsads=%d %s\n",
-        nid, spkalloc & 0xff, nsads, atiDataEmpty ? "EMPTY (GPU not ready?)" : "OK");
+  logMsg("HDMI nid=%d ATI ELD result: spkalloc=0x%02x nsads=%d %s\n",
+         nid, spkalloc & 0xff, nsads, atiDataEmpty ? "EMPTY (GPU not ready?)" : "OK");
 
   /* Build minimal ELD */
   int mnl = 0;

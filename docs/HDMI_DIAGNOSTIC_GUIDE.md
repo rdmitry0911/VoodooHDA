@@ -107,6 +107,8 @@ Interpretation:
 
 Use `Verbose logging` only while reproducing the fault.
 
+In current debug builds, the extra HDMI, ELD and framebuffer diagnostics are also routed through this runtime log level. Keep it at `Level 0` for normal use, even with the debug driver installed.
+
 Recommended usage:
 - start from `Level 0`
 - use `Level 1` or `Level 2` for normal field logs

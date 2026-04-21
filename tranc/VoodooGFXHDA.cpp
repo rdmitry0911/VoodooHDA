@@ -172,12 +172,12 @@ bool VoodooGFXHDAController::initializeStreamDMA(Channel *channel)
 		 * streamId * coeff * 4, then slices it into 4 KB BDL pages. */
 		pcmDevice->chanSize = channel->streamId * coeff * 4;
 		pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN;
-		IOLog("VoodooHDA DBG: channelInit HDMI AppleGFXHDA-like dma codec=%04x family=%s streamId=%d coeff=0x%x chanSize=%u chanNumBlocks=%u blockSize=%u\n",
-		      channel->funcGroup->codec->deviceId,
-		      appleGfxHdaAmdCodecFamilyName(channel->funcGroup->codec->deviceId),
-		      channel->streamId, (unsigned)coeff, (unsigned)pcmDevice->chanSize,
-		      (unsigned)pcmDevice->chanNumBlocks,
-		      (unsigned)(pcmDevice->chanSize / pcmDevice->chanNumBlocks));
+		mDevice->logMsg("HDMI DMA: codec=%04x family=%s streamId=%d coeff=0x%x chanSize=%u chanNumBlocks=%u blockSize=%u\n",
+				channel->funcGroup->codec->deviceId,
+				appleGfxHdaAmdCodecFamilyName(channel->funcGroup->codec->deviceId),
+				channel->streamId, (unsigned)coeff, (unsigned)pcmDevice->chanSize,
+				(unsigned)pcmDevice->chanNumBlocks,
+				(unsigned)(pcmDevice->chanSize / pcmDevice->chanNumBlocks));
 	}
 
 	channel->blockSize = pcmDevice->chanSize / pcmDevice->chanNumBlocks;
@@ -219,8 +219,8 @@ void VoodooGFXHDAController::prepareStreamDMA(Channel *channel)
 	{
 		UInt32 posAfterReset = mDevice->readData32(channel->off + HDAC_SDLPIB);
 		if (posAfterReset != 0)
-			IOLog("VoodooHDA WARN: SDLPIB=0x%x after streamReset (stream off=0x%x), expected 0\n",
-			      posAfterReset, channel->off);
+			mDevice->errorMsg("SDLPIB=0x%x after streamReset (stream off=0x%x), expected 0\n",
+					  posAfterReset, channel->off);
 	}
 
 	if (channel->buffer)
@@ -314,9 +314,9 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 	nid_t nid_pin;
 	Widget *widget_pin;
 	bool atiCodec = isAtiHdmiCodec(funcGroup->codec);
-	IOLog("VoodooHDA HDMI: streamSetup dac=%d ati=%d totalchn=%d totalext=%d codec=0x%04x:0x%04x family=%s\n",
-	      dac, atiCodec, totalchn, totalext, funcGroup->codec->vendorId, funcGroup->codec->deviceId,
-	      appleGfxHdaAmdCodecFamilyName(funcGroup->codec->deviceId));
+	mDevice->logMsg("HDMI streamSetup dac=%d ati=%d totalchn=%d totalext=%d codec=0x%04x:0x%04x family=%s\n",
+			dac, atiCodec, totalchn, totalext, funcGroup->codec->vendorId, funcGroup->codec->deviceId,
+			appleGfxHdaAmdCodecFamilyName(funcGroup->codec->deviceId));
 
 	const static UInt8 hdmica[2][8] =
 	{{ 0x02, 0x00, 0x04, 0x08, 0x0a, 0x0e, 0x12, 0x12 },
@@ -348,11 +348,11 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 		if (dumpGPUState && mDevice->mFBNotifier)
 			mDevice->mFBNotifier->diagnosticDumpGPUState("before-stream-setup", cad, nid_pin);
 
-		IOLog("VoodooHDA HDMI: streamSetup nid_pin=%d dac=%d eld_len=%d (before re-read) pinCap=0x%08x\n",
-		      nid_pin, dac, widget_pin->eld_len, (unsigned)widget_pin->pin.cap);
+		mDevice->logMsg("HDMI streamSetup nid_pin=%d dac=%d eld_len=%d (before re-read) pinCap=0x%08x\n",
+				nid_pin, dac, widget_pin->eld_len, (unsigned)widget_pin->pin.cap);
 		mDevice->hdaa_eld_handler(widget_pin);
-		IOLog("VoodooHDA HDMI: streamSetup nid_pin=%d eld_len=%d (after re-read)\n",
-		      nid_pin, widget_pin->eld_len);
+		mDevice->logMsg("HDMI streamSetup nid_pin=%d eld_len=%d (after re-read)\n",
+				nid_pin, widget_pin->eld_len);
 
 		UInt32 dipSizeTest = mDevice->sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid_pin, 0x00), cad);
 		bool useStandardPath = (dipSizeTest != HDA_INVALID) && ((dipSizeTest & 0xff) > 0);
@@ -361,14 +361,14 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 		else if (forceStandardPath)
 			useStandardPath = true;
 
-		IOLog("VoodooHDA HDMI: streamSetup nid_pin=%d DIP_SIZE(0x00)=0x%08x -> useStandard=%d ati=%d forceStd=%d forceAti=%d\n",
-		      nid_pin, (unsigned)dipSizeTest, useStandardPath, atiCodec,
-		      forceStandardPath ? 1 : 0, forceATIVendorPath ? 1 : 0);
+		mDevice->logMsg("HDMI streamSetup nid_pin=%d DIP_SIZE(0x00)=0x%08x -> useStandard=%d ati=%d forceStd=%d forceAti=%d\n",
+				nid_pin, (unsigned)dipSizeTest, useStandardPath, atiCodec,
+				forceStandardPath ? 1 : 0, forceATIVendorPath ? 1 : 0);
 
 		if (atiCodec && !useStandardPath) {
 			int ca = hdmica[totalext == 0 ? 0 : 1][totalchn - 1];
-			IOLog("VoodooHDA HDMI: ATI verb path nid_pin=%d ca=0x%02x totalchn=%d\n",
-			      nid_pin, ca, totalchn);
+			mDevice->logMsg("HDMI ATI verb path nid_pin=%d ca=0x%02x totalchn=%d\n",
+					nid_pin, ca, totalchn);
 
 			static const UInt16 ati_paired_verbs[4] = {
 				ATI_VERB_SET_MULTICHANNEL_01,
@@ -382,11 +382,11 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 				int enable = (base_slot < totalchn) ? 1 : 0;
 				UInt32 val = (base_slot << 4) | enable;
 				mDevice->sendCommand(ATI_CMD_12BIT(cad, nid_pin, ati_paired_verbs[k], val), cad);
-				IOLog("VoodooHDA HDMI: ATI MC%d%d=0x%02x\n", base_slot, base_slot + 1, val);
+				mDevice->logMsg("HDMI ATI MC%d%d=0x%02x\n", base_slot, base_slot + 1, val);
 			}
 
 			mDevice->sendCommand(ATI_CMD_12BIT(cad, nid_pin, ATI_VERB_SET_CHANNEL_ALLOCATION, ca), cad);
-			IOLog("VoodooHDA HDMI: ATI CA=0x%02x pinCtrl=0x%02x\n", ca, widget_pin->pin.ctrl);
+			mDevice->logMsg("HDMI ATI CA=0x%02x pinCtrl=0x%02x\n", ca, widget_pin->pin.ctrl);
 
 			if (HDA_PARAM_PIN_CAP_HDMI(widget_pin->pin.cap) &&
 			    HDA_PARAM_PIN_CAP_HBR(widget_pin->pin.cap)) {
@@ -426,14 +426,14 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 				mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
 				mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
 			}
-			IOLog("VoodooHDA HDMI: ATI path + CHAN_SLOT + InfoFrame + DIP_XMIT=0xc0 nid=%d ca=0x%02x chn=%d\n",
-			      nid_pin, hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
+			mDevice->logMsg("HDMI ATI path + CHAN_SLOT + InfoFrame + DIP_XMIT=0xc0 nid=%d ca=0x%02x chn=%d\n",
+					nid_pin, hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
 			if (dumpGPUState && mDevice->mFBNotifier)
 				mDevice->mFBNotifier->diagnosticDumpGPUState("after-ati-stream-setup", cad, nid_pin);
 			continue;
 		}
 
-		IOLog("VoodooHDA HDMI: standard HDA path nid_pin=%d\n", nid_pin);
+		mDevice->logMsg("HDMI standard HDA path nid_pin=%d\n", nid_pin);
 
 		for (int k = 0; k < 8; k++)
 			mDevice->sendCommand(HDA_CMD_SET_HDMI_CHAN_SLOT(cad, nid_pin,
@@ -451,12 +451,12 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 			UInt32 dipSize = mDevice->sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid_pin, 0x00), cad);
 			AudioInfopacketBufferSize = (dipSize != HDA_INVALID) ?
 				static_cast<UInt16>((dipSize & 0xff) + 1U) : 0;
-			IOLog("VoodooHDA HDMI: nid_pin=%d AudioInfopacketBufferSize=%u\n", nid_pin, AudioInfopacketBufferSize);
+			mDevice->logMsg("HDMI nid_pin=%d AudioInfopacketBufferSize=%u\n", nid_pin, AudioInfopacketBufferSize);
 		}
 
 		if (AudioInfopacketBufferSize < 10U) {
-			IOLog("VoodooHDA HDMI: nid_pin=%d infoframe buffer too small (%u), skipping\n",
-			      nid_pin, AudioInfopacketBufferSize);
+			mDevice->logMsg("HDMI nid_pin=%d infoframe buffer too small (%u), skipping\n",
+					nid_pin, AudioInfopacketBufferSize);
 			continue;
 		}
 
@@ -468,9 +468,9 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 
 		mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
 		bool isDP_conn = widget_pin->eld != NULL && widget_pin->eld_len >= 6 && ((widget_pin->eld[5] >> 2) & 0x3) == 1;
-		IOLog("VoodooHDA HDMI: nid_pin=%d infoframe: eld_len=%d conn_type=%s ca=0x%02x totalchn=%d\n",
-		      nid_pin, widget_pin->eld_len, isDP_conn ? "DP" : "HDMI",
-		      hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
+		mDevice->logMsg("HDMI nid_pin=%d infoframe: eld_len=%d conn_type=%s ca=0x%02x totalchn=%d\n",
+				nid_pin, widget_pin->eld_len, isDP_conn ? "DP" : "HDMI",
+				hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
 #if DP_AUDIO
 		if (isDP_conn) {
 			mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_DATA(cad, nid_pin, 0x84), cad);

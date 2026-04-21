@@ -62,12 +62,9 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	mGFXController = NULL;
 	mNumHDMIEngines = 0;
 	bzero(mHDMIEngines, sizeof(mHDMIEngines));
-	IOLog("VoodooHDA DBG: init() called, dict=%p\n", dict);
 	if (!super::init(dict)) {
-		IOLog("VoodooHDA DBG: super::init() FAILED\n");
 		return false;
 	}
-	IOLog("VoodooHDA DBG: super::init() OK, version=%s commit=" VOODOO_HDA_GIT_COMMIT "\n", kmod_info.version);
 
 	dumpMsg("Loading VoodooHDA %s commit " VOODOO_HDA_GIT_COMMIT " (based on hdac version " HDAC_REVISION ")\n",
 	        kmod_info.version);
