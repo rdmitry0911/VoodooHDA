@@ -864,6 +864,9 @@ bool VoodooHDAFramebufferNotifier::getFramebufferELD(
 
 void VoodooHDAFramebufferNotifier::ensureAudioPipeEnabled(int cad, nid_t pinNid)
 {
+	UInt16 diagFlags = mDevice ? mDevice->diagnosticFlagsForPin(cad, pinNid) : 0;
+	bool skipAudioPipe = (diagFlags & kVoodooHDADiagSkipAudioPipe) != 0;
+
 	IOLockLock(mLock);
 	for (int i = 0; i < mNumConnections; i++) {
 		FBConnectionState *conn = &mConnections[i];
@@ -874,14 +877,21 @@ void VoodooHDAFramebufferNotifier::ensureAudioPipeEnabled(int cad, nid_t pinNid)
 				if (readEDID(conn) && parseEDIDAudio(conn)) {
 					buildELDFromEDID(conn);
 					conn->edidValid = true;
-					enableAudioPipe(conn);
+					if (!skipAudioPipe)
+						enableAudioPipe(conn);
+					else
+						FBLOG("ensureAudioPipeEnabled: pin=%d skipping framebuffer audio-pipe enable due to diagnostic flag",
+						      pinNid);
 					injectELDIntoWidget(conn);
 				}
-			} else if (!conn->audioPipeEnabled) {
+			} else if (!conn->audioPipeEnabled && !skipAudioPipe) {
 				/* EDID is valid but pipe was disabled (e.g., by power-gating logic
 				 * that incorrectly reads ATI presence=0 as disconnected).
 				 * Re-enable it now that audio is about to stream. */
 				enableAudioPipe(conn);
+			} else if (skipAudioPipe) {
+				FBLOG("ensureAudioPipeEnabled: pin=%d leaving framebuffer audio pipe disabled due to diagnostic flag",
+				      pinNid);
 			}
 			break;
 		}
@@ -1053,6 +1063,15 @@ static const AZRegOffsets kVega10Regs = {
 	.dccgDto1Module = DW2B(0x00C0 + 0x00AF),
 };
 
+static const char *azRegTableName(const AZRegOffsets *regs)
+{
+	if (regs == &kPolarisRegs)
+		return "Polaris DCE11";
+	if (regs == &kVega10Regs)
+		return "Vega DCE12";
+	return "Unknown";
+}
+
 /* ---------- GPU MMIO mapping ---------- */
 
 bool VoodooHDAFramebufferNotifier::mapGPUMMIO()
@@ -1098,17 +1117,19 @@ bool VoodooHDAFramebufferNotifier::mapGPUMMIO()
 	      gpuDev, gpuDev->configRead16(kIOPCIConfigVendorID), gpuDeviceId);
 
 	/* Select register offset table based on GPU generation.
-	 * Polaris (DCE 11.x): 67xx device IDs (Ellesmere/Baffin/Lexa)
-	 * Vega 10 (DCE 12.0): 687x/686x device IDs */
+	 * Polaris 30 (RX 590, 6fxx) shares the same AZ/AFMT layout as the rest
+	 * of Polaris in the local reference headers; do not let it fall through
+	 * into the Vega table by accident. */
 	if ((gpuDeviceId & 0xFF00) == 0x6700 || /* Polaris 10/11/12 */
 	    (gpuDeviceId & 0xFF00) == 0x6600 || /* Polaris 12/Lexa */
+	    (gpuDeviceId & 0xFF00) == 0x6F00 || /* Polaris 30 */
 	    (gpuDeviceId & 0xFF00) == 0x6900)   /* Tonga/Fiji */
 		mRegs = &kPolarisRegs;
 	else
 		mRegs = &kVega10Regs;  /* Vega and newer — best guess */
 
-	FBLOG("mapGPUMMIO: using %s register offsets",
-	      mRegs == &kPolarisRegs ? "Polaris DCE11" : "Vega DCE12");
+	FBLOG("mapGPUMMIO: using %s register offsets for GPU device=%04x",
+	      azRegTableName(reinterpret_cast<const AZRegOffsets *>(mRegs)), gpuDeviceId);
 
 	/* Find the MMIO BAR (typically BAR5, ~256KB-512KB).
 	 * BAR0/1 = VRAM (huge), BAR2/3 = doorbell, BAR5 = MMIO registers */
@@ -1385,5 +1406,19 @@ void VoodooHDAFramebufferNotifier::initGPUAudioIfNeeded()
 	 * Audio is enabled by correct HDA verbs (ATI paired multichannel),
 	 * not by GPU MMIO writes.  This dump is for debugging only. */
 	FBLOG("initGPUAudio: === GPU AZ STATE (diagnostic) ===");
+	dumpAZState();
+}
+
+void VoodooHDAFramebufferNotifier::diagnosticDumpGPUState(const char *reason, int cad, nid_t pinNid)
+{
+	if (!mapGPUMMIO()) {
+		FBLOG("diagnosticDumpGPUState: reason=%s cad=%d pin=%d map failed",
+		      reason ? reason : "unknown", cad, pinNid);
+		return;
+	}
+
+	FBLOG("diagnosticDumpGPUState: reason=%s cad=%d pin=%d regTable=%s",
+	      reason ? reason : "unknown", cad, pinNid,
+	      azRegTableName(reinterpret_cast<const AZRegOffsets *>(mRegs)));
 	dumpAZState();
 }

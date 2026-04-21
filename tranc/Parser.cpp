@@ -4924,10 +4924,15 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
 {
   uint32_t res;
-  int cad = widget->funcGroup->codec->cad;
-  nid_t nid = widget->nid;
   if (!widget || (widget->enable == 0))
     return;
+  int cad = widget->funcGroup->codec->cad;
+  nid_t nid = widget->nid;
+  bool atiCodec = isAtiHdmiCodec(widget->funcGroup->codec);
+  UInt16 diagFlags = diagnosticFlagsForPin(cad, nid);
+  bool skipFramebufferELD = (diagFlags & kVoodooHDADiagSkipFramebufferELD) != 0;
+  bool forceAnyFramebufferELD = (diagFlags & kVoodooHDADiagForceAnyFramebufferELD) != 0;
+  bool forceATIELD = atiCodec && ((diagFlags & kVoodooHDADiagForceATIELD) != 0);
   if ((widget->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX))
     return;
   if (HDA_PARAM_PIN_CAP_PRESENCE_DETECT_CAP(widget->pin.cap) == 0 ||
@@ -4938,11 +4943,15 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
    * The FB connector index→pin mapping is linear and may not match the physical
    * routing (e.g. FB connIndex=0 → nid=3 but display is on nid=7).  Try exact
    * pin match first; fall back to ANY connection with ELD for ATI codecs. */
-  if (mFBNotifier) {
+  if (mFBNotifier && !skipFramebufferELD) {
     uint8_t *fbELD = NULL;
     int fbELDLen = 0;
-    bool found = mFBNotifier->getFramebufferELD(cad, nid, &fbELD, &fbELDLen);
-    if (!found && isAtiHdmiCodec(widget->funcGroup->codec))
+    bool found = false;
+    if (forceAnyFramebufferELD && atiCodec)
+      found = mFBNotifier->getAnyFramebufferELD(&fbELD, &fbELDLen);
+    if (!found)
+      found = mFBNotifier->getFramebufferELD(cad, nid, &fbELD, &fbELDLen);
+    if (!found && atiCodec)
       found = mFBNotifier->getAnyFramebufferELD(&fbELD, &fbELDLen);
     if (found && fbELDLen > 0) {
       if (widget->eld) { freeMem(widget->eld); widget->eld = NULL; widget->eld_len = 0; }
@@ -4950,15 +4959,16 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
       if (widget->eld) {
         memcpy(widget->eld, fbELD, fbELDLen);
         widget->eld_len = fbELDLen;
-        IOLog("VoodooHDA HDMI: nid=%d using FRAMEBUFFER ELD (%d bytes, spkalloc=0x%02x)\n",
-              nid, fbELDLen, (fbELDLen > 7) ? widget->eld[7] : 0);
+        IOLog("VoodooHDA HDMI: nid=%d using FRAMEBUFFER ELD (%d bytes, spkalloc=0x%02x anyFallback=%d)\n",
+              nid, fbELDLen, (fbELDLen > 7) ? widget->eld[7] : 0, forceAnyFramebufferELD ? 1 : 0);
         return;
       }
     }
+  } else if (skipFramebufferELD) {
+    IOLog("VoodooHDA HDMI: nid=%d skipping framebuffer ELD due to diagnostic flag\n", nid);
   }
 
   res = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, nid), cad);
-  bool atiCodec = isAtiHdmiCodec(widget->funcGroup->codec);
   bool presence = (res & HDA_CMD_GET_PIN_SENSE_PRESENCE_DETECT_MASK) != 0;
   bool eldValid = (res & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0;
   bool isDP = HDA_PARAM_PIN_CAP_DP(widget->pin.cap) != 0;
@@ -4992,11 +5002,14 @@ void VoodooHDADevice::hdaa_eld_handler(Widget *widget)
    */
 
   /* === Attempt 1: Standard HDA ELD verbs === */
-  uint32_t dipSize = sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid, 0x08), cad);
-  int stdEldLen = (dipSize != HDA_INVALID) ? (dipSize & 0xff) : 0;
+  uint32_t dipSize = forceATIELD ? HDA_INVALID : sendCommand(HDA_CMD_GET_HDMI_DIP_SIZE(cad, nid, 0x08), cad);
+  int stdEldLen = (!forceATIELD && (dipSize != HDA_INVALID)) ? (dipSize & 0xff) : 0;
 
   IOLog("VoodooHDA HDMI: nid=%d standard DIP_SIZE(0x08) -> 0x%08x (eldLen=%d)\n",
         nid, (unsigned)dipSize, stdEldLen);
+
+  if (forceATIELD)
+    IOLog("VoodooHDA HDMI: nid=%d forcing ATI ELD emulation path due to diagnostic flag\n", nid);
 
   if (stdEldLen > 0) {
     widget->eld_len = stdEldLen;

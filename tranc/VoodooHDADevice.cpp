@@ -3538,6 +3538,17 @@ void VoodooHDADevice::setDiagnosticFlags(UInt8 tabNum, UInt16 flags)
 	engine->resetDiagnosticState();
 }
 
+UInt16 VoodooHDADevice::diagnosticFlagsForPin(int cad, nid_t pinNid) const
+{
+	for (int i = 0; i < mNumHDMIEngines; i++) {
+		const HDMIEngineSlot *slot = &mHDMIEngines[i];
+		if (slot->cad != cad || slot->pinNid != pinNid || !slot->channel)
+			continue;
+		return slot->channel->diagnosticFlags;
+	}
+	return 0;
+}
+
 void VoodooHDADevice::setDebugLevel(UInt8 level)
 {
 #if VOODOO_HDA_DEBUG_BUILD

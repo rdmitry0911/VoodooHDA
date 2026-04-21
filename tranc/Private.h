@@ -338,6 +338,89 @@ static inline bool isAtiHdmiCodec(Codec *codec) {
 	return codec->vendorId == 0x1002;
 }
 
+/*
+ * AppleGFXHDA does not treat all AMD HDMI codecs as one generic family.
+ * The decompiled function-group/widget factory routes several codec IDs
+ * through distinct ATI families, with aad8/aae0/aaf0/aaf8/ab2x/ab38/abf8
+ * all landing on the Tahiti-era vendor path.
+ */
+enum AppleGFXHDAAmdCodecFamily {
+	kAppleGFXHDAAmdFamilyUnknown = 0,
+	kAppleGFXHDAAmdFamilyRS710,
+	kAppleGFXHDAAmdFamilyRS730,
+	kAppleGFXHDAAmdFamilyRS780,
+	kAppleGFXHDAAmdFamilyPark,
+	kAppleGFXHDAAmdFamilyBroadway,
+	kAppleGFXHDAAmdFamilyTahiti
+};
+
+static inline AppleGFXHDAAmdCodecFamily appleGfxHdaAmdCodecFamily(UInt16 deviceId)
+{
+	switch (deviceId) {
+		case 0xaa30:
+			return kAppleGFXHDAAmdFamilyRS780;
+		case 0xaa38:
+			return kAppleGFXHDAAmdFamilyRS730;
+		case 0xaa40:
+			return kAppleGFXHDAAmdFamilyRS710;
+		case 0xaa00:
+		case 0xaa01:
+		case 0xaa08:
+		case 0xaa10:
+		case 0xaa18:
+		case 0xaa20:
+		case 0xaa28:
+		case 0xaa48:
+			return kAppleGFXHDAAmdFamilyPark;
+		case 0xaa88:
+		case 0xaa90:
+		case 0xaa98:
+			return kAppleGFXHDAAmdFamilyBroadway;
+		case 0xaad8:
+		case 0xaae0:
+		case 0xaaf0:
+		case 0xaaf8:
+		case 0xab20:
+		case 0xab28:
+		case 0xab38:
+		case 0xabf8:
+			return kAppleGFXHDAAmdFamilyTahiti;
+		default:
+			return kAppleGFXHDAAmdFamilyUnknown;
+	}
+}
+
+static inline const char *appleGfxHdaAmdCodecFamilyName(UInt16 deviceId)
+{
+	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+		case kAppleGFXHDAAmdFamilyRS710:
+			return "ATI_RS710";
+		case kAppleGFXHDAAmdFamilyRS730:
+			return "ATI_RS730";
+		case kAppleGFXHDAAmdFamilyRS780:
+			return "ATI_RS780";
+		case kAppleGFXHDAAmdFamilyPark:
+			return "ATI_Park";
+		case kAppleGFXHDAAmdFamilyBroadway:
+			return "ATI_Broadway";
+		case kAppleGFXHDAAmdFamilyTahiti:
+			return "ATI_Tahiti";
+		default:
+			return "ATI_Generic";
+	}
+}
+
+static inline UInt32 appleGfxHdaAmdMemoryDescCoeffForCodec(UInt16 deviceId)
+{
+	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+		case kAppleGFXHDAAmdFamilyPark:
+		case kAppleGFXHDAAmdFamilyTahiti:
+			return 0x3000;
+		default:
+			return 0;
+	}
+}
+
 /* Rev3+ ATI codecs (0x1002aa01 with revision >= 0x03) support single-channel remap mode */
 static inline bool isAtiHdmiRev3(Codec *codec) {
 	return (CODEC_ID(codec) == 0x1002aa01) &&

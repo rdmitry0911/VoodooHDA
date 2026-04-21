@@ -622,10 +622,21 @@ failure:
 	[diagFreezeButton setState:(flags & kVoodooHDADiagFreezeBuffer) ? NSControlStateValueOn : NSControlStateValueOff];
 	[diagSkipEraseButton setState:(flags & kVoodooHDADiagSkipErase) ? NSControlStateValueOn : NSControlStateValueOff];
 	[diagBypassProcessingButton setState:(flags & kVoodooHDADiagBypassProcessing) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagSkipFramebufferELDButton setState:(flags & kVoodooHDADiagSkipFramebufferELD) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagForceAnyFramebufferELDButton setState:(flags & kVoodooHDADiagForceAnyFramebufferELD) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagForceATIELDButton setState:(flags & kVoodooHDADiagForceATIELD) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagSkipAudioPipeButton setState:(flags & kVoodooHDADiagSkipAudioPipe) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagDumpGPUStateButton setState:(flags & kVoodooHDADiagDumpGPUStateOnStream) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagForceStandardPathButton setState:(flags & kVoodooHDADiagForceStandardHDMIPath) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagForceATIVendorPathButton setState:(flags & kVoodooHDADiagForceATIVendorPath) ? NSControlStateValueOn : NSControlStateValueOff];
 
 	buttons = [NSArray arrayWithObjects:diagEnableButton, diagMixToneButton,
 	           diagDirectToneButton, diagPrimeButton, diagFreezeButton,
-	           diagSkipEraseButton, diagBypassProcessingButton, nil];
+	           diagSkipEraseButton, diagBypassProcessingButton,
+	           diagSkipFramebufferELDButton, diagForceAnyFramebufferELDButton,
+	           diagForceATIELDButton, diagSkipAudioPipeButton,
+	           diagDumpGPUStateButton, diagForceStandardPathButton,
+	           diagForceATIVendorPathButton, nil];
 	for (NSButton *button in buttons)
 		[button setEnabled:enabled];
 
@@ -639,7 +650,7 @@ failure:
 	} else if (!playbackChannel) {
 		[diagnosticsInfoText setStringValue:@"Diagnostics affect playback channels only. Verbose logging remains available for this debug build."];
 	} else if (chInfo[currentChannel].digital >= 2) {
-		[diagnosticsInfoText setStringValue:@"Current channel is HDMI/DP. Direct tone + prime/freeze isolates DMA and transport; mix tone then checks clip/conversion."];
+		[diagnosticsInfoText setStringValue:@"Current channel is HDMI/DP. Buffer toggles isolate DMA/fill, while ELD/audio-pipe/path toggles split framebuffer ELD, ATI verbs and standard HDA/DIP setup."];
 	} else {
 		[diagnosticsInfoText setStringValue:@"Current channel is analog/SPDIF. Mix/direct tone and erase/process toggles isolate the software path."];
 	}
@@ -704,23 +715,36 @@ failure:
 	[verboseSelector setAction:@selector(verboseChanged:)];
 	[content addSubview:verboseSelector];
 
-	[content addSubview:(diagEnableButton = createDiagnosticCheckbox(NSMakeRect(14, 220, 250, 18),
+	[content addSubview:(diagEnableButton = createDiagnosticCheckbox(NSMakeRect(14, 230, 250, 18),
 	                                                                 @"Enable diagnostic mode", 0, self))];
-	[content addSubview:(diagMixToneButton = createDiagnosticCheckbox(NSMakeRect(14, 192, 250, 18),
+	[content addSubview:(diagMixToneButton = createDiagnosticCheckbox(NSMakeRect(14, 206, 250, 18),
 	                                                                  @"Inject tone in mix buffer", 1, self))];
-	[content addSubview:(diagDirectToneButton = createDiagnosticCheckbox(NSMakeRect(14, 164, 250, 18),
+	[content addSubview:(diagDirectToneButton = createDiagnosticCheckbox(NSMakeRect(14, 182, 250, 18),
 	                                                                     @"Inject tone direct to sample buffer", 2, self))];
-	[content addSubview:(diagPrimeButton = createDiagnosticCheckbox(NSMakeRect(14, 136, 250, 18),
+	[content addSubview:(diagPrimeButton = createDiagnosticCheckbox(NSMakeRect(14, 158, 250, 18),
 	                                                                @"Prime full DMA buffer on start", 3, self))];
-	[content addSubview:(diagFreezeButton = createDiagnosticCheckbox(NSMakeRect(290, 220, 250, 18),
+	[content addSubview:(diagFreezeButton = createDiagnosticCheckbox(NSMakeRect(14, 134, 250, 18),
 	                                                                 @"Freeze buffer after first fill", 4, self))];
-	[content addSubview:(diagSkipEraseButton = createDiagnosticCheckbox(NSMakeRect(290, 192, 250, 18),
+	[content addSubview:(diagSkipEraseButton = createDiagnosticCheckbox(NSMakeRect(14, 110, 250, 18),
 	                                                                    @"Skip eraseOutputSamples", 5, self))];
-	[content addSubview:(diagBypassProcessingButton = createDiagnosticCheckbox(NSMakeRect(290, 164, 250, 18),
+	[content addSubview:(diagBypassProcessingButton = createDiagnosticCheckbox(NSMakeRect(14, 86, 250, 18),
 	                                                                           @"Bypass Voodoo processing", 6, self))];
-
-	[content addSubview:createDiagnosticText(NSMakeRect(14, 54, 560, 66),
-	                                         @"Suggested path: 1) direct tone + prime + freeze tests DMA/transport, 2) direct tone without freeze tests buffer service, 3) mix tone tests clip/conversion, 4) skip erase and bypass processing isolate overwrite/corruption paths, 5) raise verbose level only while reproducing the fault.",
+	[content addSubview:(diagSkipFramebufferELDButton = createDiagnosticCheckbox(NSMakeRect(290, 230, 250, 18),
+	                                                                              @"Skip framebuffer ELD", 7, self))];
+	[content addSubview:(diagForceAnyFramebufferELDButton = createDiagnosticCheckbox(NSMakeRect(290, 206, 250, 18),
+	                                                                                  @"Force any-framebuffer ELD", 8, self))];
+	[content addSubview:(diagForceATIELDButton = createDiagnosticCheckbox(NSMakeRect(290, 182, 250, 18),
+	                                                                      @"Force ATI ELD verbs", 9, self))];
+	[content addSubview:(diagSkipAudioPipeButton = createDiagnosticCheckbox(NSMakeRect(290, 158, 250, 18),
+	                                                                        @"Skip framebuffer audio pipe", 10, self))];
+	[content addSubview:(diagDumpGPUStateButton = createDiagnosticCheckbox(NSMakeRect(290, 134, 250, 18),
+	                                                                       @"Dump GPU AZ/MMIO on stream", 11, self))];
+	[content addSubview:(diagForceStandardPathButton = createDiagnosticCheckbox(NSMakeRect(290, 110, 250, 18),
+	                                                                             @"Force standard HDA/DIP path", 12, self))];
+	[content addSubview:(diagForceATIVendorPathButton = createDiagnosticCheckbox(NSMakeRect(290, 86, 250, 18),
+	                                                                              @"Force ATI vendor HDMI path", 13, self))];
+	[content addSubview:createDiagnosticText(NSMakeRect(14, 12, 560, 58),
+	                                         @"Suggested path: 1) direct tone + prime + freeze tests DMA/transport, 2) mix tone plus erase/process toggles tests the software fill path, 3) skip/force framebuffer ELD and ATI ELD verbs isolates sink-data problems, 4) skip audio-pipe and force standard/vendor HDMI path isolates Apple framebuffer vs ATI verb routing, 5) dump GPU state only while reproducing the fault.",
 	                                         [NSFont systemFontOfSize:11.0])];
 	activePane = 0;
 	[self updateVisiblePane];
@@ -971,6 +995,13 @@ failure:
 		case 4: bit = kVoodooHDADiagFreezeBuffer; break;
 		case 5: bit = kVoodooHDADiagSkipErase; break;
 		case 6: bit = kVoodooHDADiagBypassProcessing; break;
+		case 7: bit = kVoodooHDADiagSkipFramebufferELD; break;
+		case 8: bit = kVoodooHDADiagForceAnyFramebufferELD; break;
+		case 9: bit = kVoodooHDADiagForceATIELD; break;
+		case 10: bit = kVoodooHDADiagSkipAudioPipe; break;
+		case 11: bit = kVoodooHDADiagDumpGPUStateOnStream; break;
+		case 12: bit = kVoodooHDADiagForceStandardHDMIPath; break;
+		case 13: bit = kVoodooHDADiagForceATIVendorPath; break;
 		default: return;
 	}
 

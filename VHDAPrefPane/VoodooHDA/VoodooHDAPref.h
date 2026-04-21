@@ -74,7 +74,14 @@ enum {
 	kVoodooHDADiagFreezeBuffer       = 1U << 3,
 	kVoodooHDADiagSkipErase          = 1U << 4,
 	kVoodooHDADiagBypassProcessing   = 1U << 5,
-	kVoodooHDADiagPrimeBufferOnStart = 1U << 6
+	kVoodooHDADiagPrimeBufferOnStart = 1U << 6,
+	kVoodooHDADiagSkipFramebufferELD = 1U << 7,
+	kVoodooHDADiagForceAnyFramebufferELD = 1U << 8,
+	kVoodooHDADiagForceATIELD        = 1U << 9,
+	kVoodooHDADiagSkipAudioPipe      = 1U << 10,
+	kVoodooHDADiagDumpGPUStateOnStream = 1U << 11,
+	kVoodooHDADiagForceStandardHDMIPath = 1U << 12,
+	kVoodooHDADiagForceATIVendorPath = 1U << 13
 };
 
 enum {
@@ -137,6 +144,13 @@ enum {
 	NSButton *diagFreezeButton;
 	NSButton *diagSkipEraseButton;
 	NSButton *diagBypassProcessingButton;
+	NSButton *diagSkipFramebufferELDButton;
+	NSButton *diagForceAnyFramebufferELDButton;
+	NSButton *diagForceATIELDButton;
+	NSButton *diagSkipAudioPipeButton;
+	NSButton *diagDumpGPUStateButton;
+	NSButton *diagForceStandardPathButton;
+	NSButton *diagForceATIVendorPathButton;
 	NSInteger activePane;
 	BOOL updatingDiagnosticsUI;
 	CGFloat initialViewWidth;
