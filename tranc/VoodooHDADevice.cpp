@@ -74,10 +74,15 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	
 //	ASSERT(dict);
 	verboseLevelNum = OSDynamicCast(OSNumber, dict->getObject(kVoodooHDAVerboseLevelKey));
+#if VOODOO_HDA_DEBUG_BUILD
 	if (verboseLevelNum)
 		mVerbose = verboseLevelNum->unsigned32BitValue();
 	else
 		mVerbose = 0;
+#else
+	(void)verboseLevelNum;
+	mVerbose = 0;
+#endif
 
 	mMessageLock = IOLockAlloc();
 
@@ -1402,7 +1407,7 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 		return result;
 	}
 
-	if((action & 0x60)  == kVoodooHDAActionSetMath) {
+	if((action & 0xFF)  == kVoodooHDAActionSetMath) {
 		UInt8 ch, opt, val;
 		ch = ((action >> 8) & 0xFF);
 		opt = ((action >> 16) & 0xFF);
@@ -1433,6 +1438,49 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 
 		return result;		
 		}
+
+	if ((action & 0xFF) == kVoodooHDAActionSetDiag) {
+#if !VOODOO_HDA_DEBUG_BUILD
+		*outSize = 0;
+		*outData = NULL;
+		return kIOReturnUnsupported;
+#else
+		UInt8 ch;
+		UInt16 flags;
+
+		ch = ((action >> 8) & 0xFF);
+		flags = static_cast<UInt16>(((action >> 16) & 0xFF) | (((action >> 24) & 0xFF) << 8));
+
+		if (ch < device->nSliderTabsCount) {
+			device->lockPrefPanelMemoryBuf();
+			device->mPrefPanelMemoryBuf[ch].diagnosticFlags = flags;
+			device->unlockPrefPanelMemoryBuf();
+		}
+
+		device->setDiagnosticFlags(ch, flags);
+
+		*outSize = 0;
+		*outData = NULL;
+
+		return result;
+#endif
+	}
+
+	if ((action & 0xFF) == kVoodooHDAActionSetDebug) {
+#if !VOODOO_HDA_DEBUG_BUILD
+		*outSize = 0;
+		*outData = NULL;
+		return kIOReturnUnsupported;
+#else
+		UInt8 level;
+
+		level = ((action >> 24) & 0xFF);
+		device->setDebugLevel(level);
+		*outSize = 0;
+		*outData = NULL;
+		return result;
+#endif
+	}
 
 	//Команда от моей версии getDump для обновления данных об усилении
 	if((action & 0xFF)  == kVoodooHDAActionGetMixers) {
@@ -1507,6 +1555,11 @@ ChannelInfo *VoodooHDADevice::getChannelInfo() {
 		info[i].noiseLevel = engine->mChannel->noiseLevel;
 		info[i].useStereo = engine->mChannel->useStereo;
 		info[i].StereoBase = engine->mChannel->StereoBase;
+		info[i].digital = engine->mChannel->pcmDevice ? engine->mChannel->pcmDevice->digital : 0;
+		info[i].direction = static_cast<SInt8>(engine->mChannel->direction);
+		info[i].diagnosticFlags = engine->mChannel->diagnosticFlags;
+		info[i].debugLevel = static_cast<UInt8>(mVerbose & 0xff);
+		info[i].buildFlags = VOODOO_HDA_DEBUG_BUILD ? kVoodooHDABuildSupportsDebug : 0;
 	}
 	
 	return info;
@@ -3313,6 +3366,7 @@ void VoodooHDADevice::createPrefPanelMemoryBuf(FunctionGroup *funcGroup)
 	}
 
 	for(int i = 0; i < nSliderTabsCount; i++) {
+		VoodooHDAEngine *engine = lookupEngine(i);
 		strlcpy(mPrefPanelMemoryBuf[i].name, sliderTabs[i].name, MAX_SLIDER_TAB_NAME_LENGTH);
 		mPrefPanelMemoryBuf[i].numChannels = nSliderTabsCount;
 		for(int j = 1; j < 25; j++) {
@@ -3332,6 +3386,10 @@ void VoodooHDADevice::createPrefPanelMemoryBuf(FunctionGroup *funcGroup)
 		mPrefPanelMemoryBuf[i].useStereo = useStereo;
 		mPrefPanelMemoryBuf[i].StereoBase = StereoBase;
 		mPrefPanelMemoryBuf[i].digital = sliderTabs[i].pcmDevice ? sliderTabs[i].pcmDevice->digital : 0;
+		mPrefPanelMemoryBuf[i].direction = engine ? static_cast<SInt8>(engine->mChannel->direction) : 0;
+		mPrefPanelMemoryBuf[i].diagnosticFlags = engine ? engine->mChannel->diagnosticFlags : 0;
+		mPrefPanelMemoryBuf[i].debugLevel = static_cast<UInt8>(mVerbose & 0xff);
+		mPrefPanelMemoryBuf[i].buildFlags = VOODOO_HDA_DEBUG_BUILD ? kVoodooHDABuildSupportsDebug : 0;
 	}
 }
 
@@ -3414,6 +3472,7 @@ void VoodooHDADevice::updatePrefPanelMemoryBuf(void)
 	//logMsg("VoodooHDADevice::updatePrefPanelMemoryBuf\n");
 
 	for(int i = 0; i < nSliderTabsCount; i++) {
+		VoodooHDAEngine *engine = lookupEngine(i);
 
 		if(sliderTabs[i].pcmDevice == 0) continue;
 
@@ -3424,6 +3483,17 @@ void VoodooHDADevice::updatePrefPanelMemoryBuf(void)
 			mPrefPanelMemoryBuf[i].mixerValues[j - 1].value = sliderTabs[i].pcmDevice->left[j];
 		}
 		mPrefPanelMemoryBuf[i].mixerValues[24].value = sliderTabs[i].pcmDevice->left[0];// mMixerDefaults[0];
+		if (engine) {
+			mPrefPanelMemoryBuf[i].vectorize = engine->mChannel->vectorize;
+			mPrefPanelMemoryBuf[i].noiseLevel = engine->mChannel->noiseLevel;
+			mPrefPanelMemoryBuf[i].useStereo = engine->mChannel->useStereo;
+			mPrefPanelMemoryBuf[i].StereoBase = engine->mChannel->StereoBase;
+			mPrefPanelMemoryBuf[i].digital = engine->mChannel->pcmDevice ? engine->mChannel->pcmDevice->digital : 0;
+			mPrefPanelMemoryBuf[i].direction = static_cast<SInt8>(engine->mChannel->direction);
+			mPrefPanelMemoryBuf[i].diagnosticFlags = engine->mChannel->diagnosticFlags;
+			mPrefPanelMemoryBuf[i].debugLevel = static_cast<UInt8>(mVerbose & 0xff);
+			mPrefPanelMemoryBuf[i].buildFlags = VOODOO_HDA_DEBUG_BUILD ? kVoodooHDABuildSupportsDebug : 0;
+		}
 	}
 }
 
@@ -3454,6 +3524,30 @@ void VoodooHDADevice::setMath(UInt8 tabNum, UInt8 sliderNum, UInt8 newValue)
 	engine->mChannel->noiseLevel = n;
 	engine->mChannel->StereoBase = b;
 	
+}
+
+void VoodooHDADevice::setDiagnosticFlags(UInt8 tabNum, UInt16 flags)
+{
+	VoodooHDAEngine *engine;
+
+	engine = lookupEngine(tabNum);
+	if (!engine)
+		return;
+
+	engine->mChannel->diagnosticFlags = flags;
+	engine->resetDiagnosticState();
+}
+
+void VoodooHDADevice::setDebugLevel(UInt8 level)
+{
+#if VOODOO_HDA_DEBUG_BUILD
+	if (level > 4)
+		level = 4;
+	mVerbose = level;
+	updatePrefPanelMemoryBuf();
+#else
+	(void)level;
+#endif
 }
 
 void VoodooHDADevice::freePrefPanelMemoryBuf(void)

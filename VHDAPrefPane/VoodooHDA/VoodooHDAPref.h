@@ -13,6 +13,10 @@
 #define MAX_SLIDER_TAB_NAME_LENGTH 32
 #define SOUND_MIXER_NRDEVICES 25
 
+#ifndef VOODOO_HDA_DEBUG_BUILD
+#define VOODOO_HDA_DEBUG_BUILD 0
+#endif
+
 typedef union {
 	struct {
 		UInt8 action;
@@ -40,7 +44,10 @@ typedef struct _ChannelInfo {
     UInt8 noiseLevel;
 	UInt8 StereoBase;
 	UInt8 digital;   // 0=analog, 1=S/PDIF, 2=HDMI, 3=DisplayPort
-	UInt8 empty[2];  // alignment
+	SInt8 direction; // 1=playback, -1=capture
+	UInt16 diagnosticFlags;
+	UInt8 debugLevel;
+	UInt8 buildFlags;
 } ChannelInfo;
 
 enum {
@@ -55,7 +62,23 @@ enum {
 enum {
 	kVoodooHDAActionSetMixer = 0x40,
 	kVoodooHDAActionGetMixers = 0x50,
-	kVoodooHDAActionSetMath = 0x60
+	kVoodooHDAActionSetMath = 0x60,
+	kVoodooHDAActionSetDiag = 0x70,
+	kVoodooHDAActionSetDebug = 0x80
+};
+
+enum {
+	kVoodooHDADiagEnable             = 1U << 0,
+	kVoodooHDADiagInjectMixTone      = 1U << 1,
+	kVoodooHDADiagInjectDirectTone   = 1U << 2,
+	kVoodooHDADiagFreezeBuffer       = 1U << 3,
+	kVoodooHDADiagSkipErase          = 1U << 4,
+	kVoodooHDADiagBypassProcessing   = 1U << 5,
+	kVoodooHDADiagPrimeBufferOnStart = 1U << 6
+};
+
+enum {
+	kVoodooHDABuildSupportsDebug = 1U << 0
 };
 
 @interface VoodooHDAPref : NSPreferencePane
@@ -100,6 +123,22 @@ enum {
 	NSInteger currentService;
 	UInt8 currentChannel;
 	ChannelInfo *chInfo;
+	NSSegmentedControl *paneSelector;
+	NSBox *mixerBox;
+	NSBox *soundTreatmentBox;
+	NSBox *diagnosticsBox;
+	NSTextField *diagnosticsInfoText;
+	NSTextField *verboseText;
+	NSPopUpButton *verboseSelector;
+	NSButton *diagEnableButton;
+	NSButton *diagMixToneButton;
+	NSButton *diagDirectToneButton;
+	NSButton *diagPrimeButton;
+	NSButton *diagFreezeButton;
+	NSButton *diagSkipEraseButton;
+	NSButton *diagBypassProcessingButton;
+	NSInteger activePane;
+	BOOL updatingDiagnosticsUI;
 	CGFloat initialViewWidth;
 	CGFloat designBoxWidth;
 	CGFloat detectedContentWidth;
@@ -107,6 +146,8 @@ enum {
 }
 //- (bool) updateChannelInfo;
 - (bool) updateMath;
+- (bool) updateDiagnostics;
+- (bool) updateDebugOptions;
 - (bool) updateSliders;
 - (void) mainViewDidLoad;
 - (void) didUnselect;
@@ -120,6 +161,9 @@ enum {
 //- (IBAction)enableAllSLiders:(NSButton *)sender;
 - (IBAction)SSEChanged:(NSButton *)sender;
 - (IBAction)useStereoEnhance:(NSButton *)sender;
+- (IBAction)paneChanged:(NSSegmentedControl *)sender;
+- (IBAction)diagnosticToggled:(NSButton *)sender;
+- (IBAction)verboseChanged:(NSPopUpButton *)sender;
 
 //- (void) changeVersionText;
 

@@ -3,6 +3,10 @@
 #ifndef _SHARED_H
 #define _SHARED_H
 
+#ifndef VOODOO_HDA_DEBUG_BUILD
+#define VOODOO_HDA_DEBUG_BUILD 0
+#endif
+
 #define kVoodooHDAClassName	"VoodooHDADevice"
 
 enum {
@@ -45,7 +49,23 @@ enum {
 enum {
 	kVoodooHDAActionSetMixer = 0x40,
 	kVoodooHDAActionGetMixers = 0x50,
-	kVoodooHDAActionSetMath = 0x60
+	kVoodooHDAActionSetMath = 0x60,
+	kVoodooHDAActionSetDiag = 0x70,
+	kVoodooHDAActionSetDebug = 0x80
+};
+
+enum {
+	kVoodooHDADiagEnable             = 1U << 0,
+	kVoodooHDADiagInjectMixTone      = 1U << 1,
+	kVoodooHDADiagInjectDirectTone   = 1U << 2,
+	kVoodooHDADiagFreezeBuffer       = 1U << 3,
+	kVoodooHDADiagSkipErase          = 1U << 4,
+	kVoodooHDADiagBypassProcessing   = 1U << 5,
+	kVoodooHDADiagPrimeBufferOnStart = 1U << 6
+};
+
+enum {
+	kVoodooHDABuildSupportsDebug = 1U << 0
 };
 
 typedef union {
@@ -75,7 +95,10 @@ typedef struct _ChannelInfo {
     UInt8 noiseLevel;
 	UInt8 StereoBase;
 	UInt8 digital;   // PcmDevice digital type: 0=analog, 1=S/PDIF, 2=HDMI, 3=DisplayPort
-	UInt8 empty[2];  // alignment
+	SInt8 direction; // PCMDIR_PLAY / PCMDIR_REC
+	UInt16 diagnosticFlags;
+	UInt8 debugLevel;
+	UInt8 buildFlags;
 } ChannelInfo;
 
 #endif

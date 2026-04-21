@@ -150,6 +150,85 @@ bool sendMath(io_connect_t connect, UInt8 ch, bool vectorize, bool useStereo, UI
 	return true;
 }
 
+static
+bool sendDiag(io_connect_t connect, UInt8 ch, UInt16 flags)
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	(void)connect;
+	(void)ch;
+	(void)flags;
+	return true;
+#else
+	kern_return_t ret;
+	actionInfo in, out;
+	size_t outsize;
+
+	in.value = 0;
+	in.info.action = (UInt8)kVoodooHDAActionSetDiag;
+	in.info.channel = ch;
+	in.info.device = flags & 0xff;
+	in.info.val = (flags >> 8) & 0xff;
+
+	outsize = sizeof out;
+#if MAC_OS_X_VERSION_MIN_REQUIRED <= MAC_OS_X_VERSION_10_4
+	ret = IOConnectMethodStructureIStructureO(connect, kVoodooHDAActionMethod,
+											  sizeof in,
+											  &outsize,
+											  &in,
+											  &out);
+#else
+	ret = IOConnectCallStructMethod(connect,
+									kVoodooHDAActionMethod,
+									&in,
+									sizeof in,
+									&out,
+									&outsize);
+#endif
+	if (ret != KERN_SUCCESS) {
+		NSLog(@"%s: Can't connect to StructMethod to send commands\n", __FUNCTION__);
+		return false;
+	}
+	return true;
+#endif
+}
+
+static
+bool sendDebug(io_connect_t connect, UInt8 level)
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	(void)connect;
+	(void)level;
+	return true;
+#else
+	kern_return_t ret;
+	actionInfo in, out;
+	size_t outsize;
+
+	in.value = 0;
+	in.info.action = (UInt8)kVoodooHDAActionSetDebug;
+	in.info.channel = 0;
+	in.info.device = 0;
+	in.info.val = level;
+
+	outsize = sizeof out;
+#if MAC_OS_X_VERSION_MIN_REQUIRED <= MAC_OS_X_VERSION_10_4
+	ret = IOConnectMethodStructureIStructureO(connect, kVoodooHDAActionMethod,
+											  sizeof in,
+											  &outsize,
+											  &in,
+											  &out);
+#else
+	ret = IOConnectCallStructMethod(connect,
+									kVoodooHDAActionMethod,
+									&in,
+									sizeof in,
+									&out,
+									&outsize);
+#endif
+	return ret == KERN_SUCCESS;
+#endif
+}
+
 //get channel info from driver
 static
 ChannelInfo *getChannelInfoFromDriver(io_connect_t connect)
@@ -251,7 +330,13 @@ bool loadOneDevice(NSString* servicePath, ChannelInfo const* chInfo)
 				 chInfo[c].useStereo,
 				 chInfo[c].noiseLevel,
 				 chInfo[c].StereoBase);
+		sendDiag(connect, c, chInfo[c].diagnosticFlags);
 	}
+
+#if VOODOO_HDA_DEBUG_BUILD
+	if (driverInfo[0].buildFlags & kVoodooHDABuildSupportsDebug)
+		sendDebug(connect, chInfo[0].debugLevel);
+#endif
 
 	res = true;
 

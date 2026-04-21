@@ -3756,6 +3756,10 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 	UInt32 numSamples  = numSampleFrames  * streamFormat->fNumChannels;
 	Float32 *floatMixBuf = ((Float32*)mixBuf) + firstSample;
 	bool appleDigitalClipPath = usesAppleGfxClipPath();
+	bool diagnosticMixTone = diagnosticUsesMixTone();
+	bool diagnosticDirectTone = diagnosticUsesDirectTone();
+	bool diagnosticFreeze = diagnosticFreezesBuffer();
+	bool bypassProcessing = diagnosticBypassesProcessing();
 	bool SSE2 = mChannel->vectorize;
 	UInt32 noiseMask = (~0U) << mChannel->noiseLevel;
 
@@ -3763,7 +3767,7 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 	bool Stereo = mChannel->useStereo;
 	int base = mChannel->StereoBase;
 	if (base) base = mChannel->StereoBase * 2 - 14;
-	if (!appleDigitalClipPath && Stereo && base) {
+	if (!appleDigitalClipPath && !bypassProcessing && Stereo && base) {
 		if (base > 0) {
 			for (UInt32 i = 0; i < numSamples; i += 2) {
 				Float32 L = floatMixBuf[i], R = floatMixBuf[i + 1];
@@ -3780,14 +3784,35 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 	}
 	emptyStream = false;
 
+	if (diagnosticFreeze && mChannel->diagnosticBufferPrimed) {
+		if (appleDigitalClipPath && mDigitalStream)
+			mDigitalStream->noteClippedPosition(firstSampleFrame + numSampleFrames);
+		return kIOReturnSuccess;
+	}
+
+	if (diagnosticMixTone)
+		fillDiagnosticMixBuffer(floatMixBuf, numSamples, streamFormat->fNumChannels);
+
+	if (diagnosticDirectTone) {
+		IOReturn result = fillDiagnosticSampleBuffer(sampleBuf, firstSampleFrame, numSampleFrames, streamFormat);
+		if (result == kIOReturnSuccess) {
+			if (diagnosticFreeze)
+				mChannel->diagnosticBufferPrimed = true;
+			if (appleDigitalClipPath && mDigitalStream)
+				mDigitalStream->noteClippedPosition(firstSampleFrame + numSampleFrames);
+			return kIOReturnSuccess;
+		}
+	}
+
 	if ((streamFormat->fSampleFormat == kIOAudioStreamSampleFormatLinearPCM) && streamFormat->fIsMixable) {
-		if (!appleDigitalClipPath && Boost) {
+		if (!appleDigitalClipPath && !bypassProcessing && Boost) {
 			for (UInt32 i = 0; i < numSamples; i++)
 				floatMixBuf[i] *= Boost;
 		}
 		// Analog retains the old Voodoo DSP path; HDMI/DP follows AppleGFXHDA and
 		// clips directly from the mix buffer without extra in-place transforms.
-		if (!appleDigitalClipPath && mChannel && mChannel->pcmDevice && mChannel->pcmDevice->digital >= 2) {
+		if (!appleDigitalClipPath && !bypassProcessing &&
+		    mChannel && mChannel->pcmDevice && mChannel->pcmDevice->digital >= 2) {
 			float vol = mChannel->pcmDevice->left[SOUND_MIXER_PCM] / 100.0f;
 			if (vol < 0.999f) {
 				for (UInt32 i = 0; i < numSamples; i++)
@@ -3799,12 +3824,14 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 			bool nativeEndianInts = (streamFormat->fByteOrder == kIOAudioStreamByteOrderLittleEndian);
 			if (streamFormat->fBitDepth < streamFormat->fBitWidth)
 				noiseMask <<= (streamFormat->fBitWidth - streamFormat->fBitDepth);
+			if (bypassProcessing)
+				noiseMask = ~0U;
 
 			switch (streamFormat->fBitWidth) {
 			case 8: {
 				SInt8 *outBuf = ((SInt8*)sampleBuf) + firstSample;
 				ClipFloat32ToSInt8_4(floatMixBuf, outBuf, numSamples);
-				if (!appleDigitalClipPath && (noiseMask & 0xFFU) != 0xFFU)
+				if (!appleDigitalClipPath && !bypassProcessing && (noiseMask & 0xFFU) != 0xFFU)
 					for (UInt32 i = 0; i < numSamples; i++)
 						outBuf[i] &= (SInt8)noiseMask;
 				break;
@@ -3816,7 +3843,7 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 						Float32ToNativeInt16(floatMixBuf, outBuf, numSamples);
 					else
 						ClipFloat32ToSInt16LE_4(floatMixBuf, outBuf, numSamples);
-					if (!appleDigitalClipPath && (noiseMask & 0xFFFFU) != 0xFFFFU)
+					if (!appleDigitalClipPath && !bypassProcessing && (noiseMask & 0xFFFFU) != 0xFFFFU)
 						for (UInt32 i = 0; i < numSamples; i++)
 							outBuf[i] &= (SInt16)noiseMask;
 				} else
@@ -3842,7 +3869,9 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 						Float32ToNativeInt32(floatMixBuf, outBuf, numSamples);
 					else
 						ClipFloat32ToSInt32LE_4(floatMixBuf, outBuf, numSamples);
-					if ((noiseMask != ~0U) && (!appleDigitalClipPath || streamFormat->fBitDepth < streamFormat->fBitWidth))
+					if (!bypassProcessing &&
+					    (noiseMask != ~0U) &&
+					    (!appleDigitalClipPath || streamFormat->fBitDepth < streamFormat->fBitWidth))
 						for (UInt32 i = 0; i < numSamples; i++)
 							outBuf[i] &= (SInt32)noiseMask;
 				} else
@@ -3869,6 +3898,9 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 		UInt32 size   = numSampleFrames  * (streamFormat->fBitWidth / 8) * streamFormat->fNumChannels;
 		memcpy((UInt8*)sampleBuf + offset, (UInt8*)mixBuf, size);
 	}
+
+	if (diagnosticFreeze)
+		mChannel->diagnosticBufferPrimed = true;
 
 	if (appleDigitalClipPath && mDigitalStream)
 		mDigitalStream->noteClippedPosition(firstSampleFrame + numSampleFrames);

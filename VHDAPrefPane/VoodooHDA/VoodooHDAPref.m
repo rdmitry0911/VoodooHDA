@@ -10,6 +10,15 @@
 
 #import "VoodooHDAPref.h"
 
+@interface VoodooHDAPref ()
+- (void)installDiagnosticsUI;
+- (void)syncDiagnosticControls;
+- (void)updateVisiblePane;
+- (BOOL)driverSupportsDebug;
+- (UInt16)currentDiagnosticFlags;
+- (void)setCurrentDiagnosticFlags:(UInt16)flags;
+@end
+
 @implementation VoodooHDAPref
 
 /* Query content area width via osascript (Accessibility API).
@@ -115,6 +124,33 @@ kern_return_t connectToService(NSString* servicePath, io_connect_t* connect)
 	ret = IOServiceOpen((io_service_t) service, mach_task_self(), 0U, connect);
 	IOObjectRelease(service);
 	return ret;
+}
+
+static
+NSButton *createDiagnosticCheckbox(NSRect frame, NSString *title, NSInteger tag, id target)
+{
+	NSButton *button = [[NSButton alloc] initWithFrame:frame];
+	[button setButtonType:NSSwitchButton];
+	[button setTitle:title];
+	[button setTag:tag];
+	[button setTarget:target];
+	[button setAction:@selector(diagnosticToggled:)];
+	[button setAutoresizingMask:NSViewMaxXMargin | NSViewMinYMargin];
+	return button;
+}
+
+static
+NSTextField *createDiagnosticText(NSRect frame, NSString *value, NSFont *font)
+{
+	NSTextField *field = [[NSTextField alloc] initWithFrame:frame];
+	[field setEditable:NO];
+	[field setBezeled:NO];
+	[field setDrawsBackground:NO];
+	[field setSelectable:NO];
+	[field setStringValue:value];
+	[field setFont:font];
+	[field setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+	return field;
 }
 
 //get channel info from driver
@@ -336,6 +372,7 @@ failure:
 
 	[soundVector setState:info[currentChannel].vectorize?NSOnState:NSOffState];
 	[stereoEnhance setState:info[currentChannel].useStereo?NSOnState:NSOffState];
+	[self syncDiagnosticControls];
 
 	return true;
 failure:
@@ -404,6 +441,290 @@ failure:
 		IOServiceClose(connect);
 
 	return false;
+}
+
+- (UInt16) currentDiagnosticFlags
+{
+	if (!chInfo)
+		return 0;
+	return chInfo[currentChannel].diagnosticFlags;
+}
+
+- (void) setCurrentDiagnosticFlags:(UInt16)flags
+{
+	if (!chInfo)
+		return;
+	chInfo[currentChannel].diagnosticFlags = flags;
+}
+
+- (BOOL) driverSupportsDebug
+{
+	if (!chInfo)
+		return NO;
+	return (chInfo[currentChannel].buildFlags & kVoodooHDABuildSupportsDebug) != 0;
+}
+
+- (bool) updateDiagnostics
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	return false;
+#else
+	kern_return_t ret;
+	io_connect_t connect = 0;
+	actionInfo in, out;
+	size_t outsize;
+	UInt16 flags;
+
+	if (!chInfo || !services || currentService < 0)
+		goto failure;
+
+	ret = connectToService((NSString*) [services objectAtIndex:currentService], &connect);
+	if (ret != KERN_SUCCESS) {
+		NSRunCriticalAlertPanel(
+								NSLocalizedString( @"Error", "MsgBox"),
+								NSLocalizedString( @"Can't open IO Service", "MsgBoxBody" ), nil, nil, nil );
+		goto failure;
+	}
+
+	flags = [self currentDiagnosticFlags];
+	in.value = 0;
+	in.info.action = (UInt8)kVoodooHDAActionSetDiag;
+	in.info.channel = currentChannel;
+	in.info.device = flags & 0xff;
+	in.info.val = (flags >> 8) & 0xff;
+
+	outsize = sizeof out;
+#if MAC_OS_X_VERSION_MIN_REQUIRED <= MAC_OS_X_VERSION_10_4
+	ret = IOConnectMethodStructureIStructureO(connect,
+											  kVoodooHDAActionMethod,
+											  sizeof in,
+											  &outsize,
+											  &in,
+											  &out);
+#else
+	ret = IOConnectCallStructMethod(connect,
+									kVoodooHDAActionMethod,
+									&in,
+									sizeof in,
+									&out,
+									&outsize);
+#endif
+	if (ret != KERN_SUCCESS) {
+		NSRunCriticalAlertPanel(
+								NSLocalizedString( @"Error", "MsgBox"),
+								NSLocalizedString( @"Can't connect to StructMethod to send commands", "MsgBoxBody" ), nil, nil, nil );
+		goto failure;
+	}
+
+	if (connect)
+		IOServiceClose(connect);
+
+	return true;
+
+failure:
+	if (connect)
+		IOServiceClose(connect);
+
+	return false;
+#endif
+}
+
+- (bool) updateDebugOptions
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	return false;
+#else
+	kern_return_t ret;
+	io_connect_t connect = 0;
+	actionInfo in, out;
+	size_t outsize;
+	UInt8 level;
+
+	if (!chInfo || !services || currentService < 0 || ![self driverSupportsDebug])
+		goto failure;
+
+	ret = connectToService((NSString *)[services objectAtIndex:currentService], &connect);
+	if (ret != KERN_SUCCESS) {
+		NSRunCriticalAlertPanel(
+								NSLocalizedString( @"Error", "MsgBox"),
+								NSLocalizedString( @"Can't open IO Service", "MsgBoxBody" ), nil, nil, nil );
+		goto failure;
+	}
+
+	level = chInfo[currentChannel].debugLevel;
+	in.value = 0;
+	in.info.action = (UInt8)kVoodooHDAActionSetDebug;
+	in.info.channel = currentChannel;
+	in.info.device = 0;
+	in.info.val = level;
+	outsize = sizeof out;
+#if MAC_OS_X_VERSION_MIN_REQUIRED <= MAC_OS_X_VERSION_10_4
+	ret = IOConnectMethodStructureIStructureO(connect, kVoodooHDAActionMethod, sizeof in, &outsize, &in, &out);
+#else
+	ret = IOConnectCallStructMethod(connect, kVoodooHDAActionMethod, &in, sizeof in, &out, &outsize);
+#endif
+	if (ret != KERN_SUCCESS) {
+		NSRunCriticalAlertPanel(
+								NSLocalizedString( @"Error", "MsgBox"),
+								NSLocalizedString( @"Can't connect to StructMethod to send commands", "MsgBoxBody" ), nil, nil, nil );
+		goto failure;
+	}
+
+	if (connect)
+		IOServiceClose(connect);
+	return true;
+
+failure:
+	if (connect)
+		IOServiceClose(connect);
+	return false;
+#endif
+}
+
+- (void) updateVisiblePane
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	return;
+#else
+	BOOL showDiagnostics = (activePane == 1) && diagnosticsBox && [self driverSupportsDebug];
+
+	[mixerBox setHidden:showDiagnostics];
+	[soundTreatmentBox setHidden:showDiagnostics];
+	[diagnosticsBox setHidden:!showDiagnostics];
+#endif
+}
+
+- (void) syncDiagnosticControls
+{
+	if (!VOODOO_HDA_DEBUG_BUILD)
+		return;
+
+#if VOODOO_HDA_DEBUG_BUILD
+	UInt16 flags;
+	BOOL driverDebug;
+	BOOL playbackChannel;
+	BOOL enabled;
+	NSArray *buttons;
+
+	if (!diagEnableButton || !chInfo || currentService < 0 || currentChannel >= chInfo[0].numChannels)
+		return;
+
+	updatingDiagnosticsUI = YES;
+	flags = [self currentDiagnosticFlags];
+	driverDebug = [self driverSupportsDebug];
+	playbackChannel = (chInfo[currentChannel].direction == 1);
+	enabled = driverDebug && playbackChannel;
+
+	[diagEnableButton setState:(flags & kVoodooHDADiagEnable) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagMixToneButton setState:(flags & kVoodooHDADiagInjectMixTone) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagDirectToneButton setState:(flags & kVoodooHDADiagInjectDirectTone) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagPrimeButton setState:(flags & kVoodooHDADiagPrimeBufferOnStart) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagFreezeButton setState:(flags & kVoodooHDADiagFreezeBuffer) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagSkipEraseButton setState:(flags & kVoodooHDADiagSkipErase) ? NSControlStateValueOn : NSControlStateValueOff];
+	[diagBypassProcessingButton setState:(flags & kVoodooHDADiagBypassProcessing) ? NSControlStateValueOn : NSControlStateValueOff];
+
+	buttons = [NSArray arrayWithObjects:diagEnableButton, diagMixToneButton,
+	           diagDirectToneButton, diagPrimeButton, diagFreezeButton,
+	           diagSkipEraseButton, diagBypassProcessingButton, nil];
+	for (NSButton *button in buttons)
+		[button setEnabled:enabled];
+
+	[verboseSelector selectItemWithTag:chInfo[currentChannel].debugLevel];
+	[verboseSelector setEnabled:driverDebug];
+	[verboseText setEnabled:driverDebug];
+
+	if (!driverDebug) {
+		[diagnosticsInfoText setStringValue:@"This driver build does not expose debug diagnostics or runtime verbose logging."];
+		activePane = 0;
+	} else if (!playbackChannel) {
+		[diagnosticsInfoText setStringValue:@"Diagnostics affect playback channels only. Verbose logging remains available for this debug build."];
+	} else if (chInfo[currentChannel].digital >= 2) {
+		[diagnosticsInfoText setStringValue:@"Current channel is HDMI/DP. Direct tone + prime/freeze isolates DMA and transport; mix tone then checks clip/conversion."];
+	} else {
+		[diagnosticsInfoText setStringValue:@"Current channel is analog/SPDIF. Mix/direct tone and erase/process toggles isolate the software path."];
+	}
+
+	[paneSelector setHidden:!driverDebug];
+	[self updateVisiblePane];
+	updatingDiagnosticsUI = NO;
+#endif
+}
+
+- (void) installDiagnosticsUI
+{
+	NSView *mainView = [self mainView];
+
+	for (NSView *sub in mainView.subviews) {
+		if (![sub isKindOfClass:[NSBox class]])
+			continue;
+		if ([[(NSBox *)sub title] isEqualToString:@"Mixer Controls"])
+			mixerBox = (NSBox *)sub;
+		else if ([[(NSBox *)sub title] isEqualToString:@"Sound treatment"])
+			soundTreatmentBox = (NSBox *)sub;
+	}
+
+#if VOODOO_HDA_DEBUG_BUILD
+	if (!mixerBox || !soundTreatmentBox)
+		return;
+
+	paneSelector = [[NSSegmentedControl alloc] initWithFrame:NSMakeRect(12, 392, 200, 24)];
+	[paneSelector setSegmentCount:2];
+	[paneSelector setLabel:@"Controls" forSegment:0];
+	[paneSelector setLabel:@"Debug" forSegment:1];
+	[paneSelector setTarget:self];
+	[paneSelector setAction:@selector(paneChanged:)];
+	[paneSelector setSelectedSegment:0];
+	[paneSelector setAutoresizingMask:NSViewMaxXMargin | NSViewMinYMargin];
+	[mainView addSubview:paneSelector];
+
+	diagnosticsBox = [[NSBox alloc] initWithFrame:NSMakeRect(0, 16, 600, 370)];
+	[diagnosticsBox setTitle:@"Debug Diagnostics"];
+	[diagnosticsBox setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+	[diagnosticsBox setHidden:YES];
+	[mainView addSubview:diagnosticsBox];
+
+	NSView *content = [diagnosticsBox contentView];
+	[content addSubview:createDiagnosticText(NSMakeRect(14, 322, 560, 18),
+	                                         @"Debug-only routing controls. Direct tone overrides mix tone.",
+	                                         [NSFont boldSystemFontOfSize:12.0])];
+	diagnosticsInfoText = createDiagnosticText(NSMakeRect(14, 292, 560, 28), @"", [NSFont systemFontOfSize:11.0]);
+	[[diagnosticsInfoText cell] setWraps:YES];
+	[[diagnosticsInfoText cell] setScrollable:NO];
+	[content addSubview:diagnosticsInfoText];
+
+	verboseText = createDiagnosticText(NSMakeRect(14, 255, 110, 18), @"Verbose logging", [NSFont systemFontOfSize:12.0]);
+	[content addSubview:verboseText];
+	verboseSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(130, 250, 140, 26) pullsDown:NO];
+	for (NSInteger level = 0; level <= 4; level++) {
+		NSString *title = [NSString stringWithFormat:@"Level %ld", (long)level];
+		[[verboseSelector menu] addItemWithTitle:title action:nil keyEquivalent:@""];
+		[[verboseSelector lastItem] setTag:level];
+	}
+	[verboseSelector setTarget:self];
+	[verboseSelector setAction:@selector(verboseChanged:)];
+	[content addSubview:verboseSelector];
+
+	[content addSubview:(diagEnableButton = createDiagnosticCheckbox(NSMakeRect(14, 220, 250, 18),
+	                                                                 @"Enable diagnostic mode", 0, self))];
+	[content addSubview:(diagMixToneButton = createDiagnosticCheckbox(NSMakeRect(14, 192, 250, 18),
+	                                                                  @"Inject tone in mix buffer", 1, self))];
+	[content addSubview:(diagDirectToneButton = createDiagnosticCheckbox(NSMakeRect(14, 164, 250, 18),
+	                                                                     @"Inject tone direct to sample buffer", 2, self))];
+	[content addSubview:(diagPrimeButton = createDiagnosticCheckbox(NSMakeRect(14, 136, 250, 18),
+	                                                                @"Prime full DMA buffer on start", 3, self))];
+	[content addSubview:(diagFreezeButton = createDiagnosticCheckbox(NSMakeRect(290, 220, 250, 18),
+	                                                                 @"Freeze buffer after first fill", 4, self))];
+	[content addSubview:(diagSkipEraseButton = createDiagnosticCheckbox(NSMakeRect(290, 192, 250, 18),
+	                                                                    @"Skip eraseOutputSamples", 5, self))];
+	[content addSubview:(diagBypassProcessingButton = createDiagnosticCheckbox(NSMakeRect(290, 164, 250, 18),
+	                                                                           @"Bypass Voodoo processing", 6, self))];
+
+	[content addSubview:createDiagnosticText(NSMakeRect(14, 54, 560, 66),
+	                                         @"Suggested path: 1) direct tone + prime + freeze tests DMA/transport, 2) direct tone without freeze tests buffer service, 3) mix tone tests clip/conversion, 4) skip erase and bypass processing isolate overwrite/corruption paths, 5) raise verbose level only while reproducing the fault.",
+	                                         [NSFont systemFontOfSize:11.0])];
+	activePane = 0;
+	[self updateVisiblePane];
+#endif
 }
 
 static
@@ -487,6 +808,7 @@ NSString* trimIORegistryPathForDisplay(NSString* path)
 											 selector:@selector(mainViewFrameChanged:)
 												 name:NSViewFrameDidChangeNotification
 											   object:mv];
+	[self installDiagnosticsUI];
 	services = getServices();
 	if (services.count > 0U)
 		currentService = 0;
@@ -618,6 +940,69 @@ failure:
 		[self updateSliders];
 		[self populateSelector];
 	}
+}
+
+- (IBAction)paneChanged:(NSSegmentedControl *)sender
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	(void)sender;
+	return;
+#else
+	if (updatingDiagnosticsUI || sender != paneSelector)
+		return;
+	activePane = [sender selectedSegment];
+	[self updateVisiblePane];
+#endif
+}
+
+- (IBAction)diagnosticToggled:(NSButton *)sender
+{
+	UInt16 flags;
+	UInt16 bit;
+
+	if (updatingDiagnosticsUI || !chInfo || !services || currentService < 0)
+		return;
+
+	switch ([sender tag]) {
+		case 0: bit = kVoodooHDADiagEnable; break;
+		case 1: bit = kVoodooHDADiagInjectMixTone; break;
+		case 2: bit = kVoodooHDADiagInjectDirectTone; break;
+		case 3: bit = kVoodooHDADiagPrimeBufferOnStart; break;
+		case 4: bit = kVoodooHDADiagFreezeBuffer; break;
+		case 5: bit = kVoodooHDADiagSkipErase; break;
+		case 6: bit = kVoodooHDADiagBypassProcessing; break;
+		default: return;
+	}
+
+	flags = [self currentDiagnosticFlags];
+	if ([sender state] == NSOnState)
+		flags |= bit;
+	else
+		flags &= ~bit;
+
+	[self setCurrentDiagnosticFlags:flags];
+	[self updateDiagnostics];
+	[self syncDiagnosticControls];
+}
+
+- (IBAction)verboseChanged:(NSPopUpButton *)sender
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	(void)sender;
+	return;
+#else
+	NSInteger tag;
+
+	if (updatingDiagnosticsUI || sender != verboseSelector || !chInfo || ![self driverSupportsDebug])
+		return;
+
+	tag = [[sender selectedItem] tag];
+	if (tag < 0)
+		tag = 0;
+	chInfo[currentChannel].debugLevel = (UInt8)tag;
+	[self updateDebugOptions];
+	[self syncDiagnosticControls];
+#endif
 }
 
 - (void) didUnselect

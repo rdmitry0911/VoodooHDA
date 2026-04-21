@@ -13,6 +13,10 @@
 #define MAX_SLIDER_TAB_NAME_LENGTH 32
 #define SOUND_MIXER_NRDEVICES 25
 
+#ifndef VOODOO_HDA_DEBUG_BUILD
+#define VOODOO_HDA_DEBUG_BUILD 0
+#endif
+
 typedef union {
 	struct {
 		UInt8 action;
@@ -39,7 +43,11 @@ typedef struct _ChannelInfo {
 	bool useStereo;
     UInt8 noiseLevel;
 	UInt8 StereoBase;
-	UInt8 empty[3];
+	UInt8 digital;
+	SInt8 direction;
+	UInt16 diagnosticFlags;
+	UInt8 debugLevel;
+	UInt8 buildFlags;
 } ChannelInfo;
 
 enum {
@@ -54,7 +62,13 @@ enum {
 enum {
 	kVoodooHDAActionSetMixer = 0x40,
 	kVoodooHDAActionGetMixers = 0x50,
-	kVoodooHDAActionSetMath = 0x60
+	kVoodooHDAActionSetMath = 0x60,
+	kVoodooHDAActionSetDiag = 0x70,
+	kVoodooHDAActionSetDebug = 0x80
+};
+
+enum {
+	kVoodooHDABuildSupportsDebug = 1U << 0
 };
 
 @interface VoodooHdaSettingsLoader : NSObject {

@@ -307,6 +307,10 @@ typedef struct _Channel {
 	bool useStereo;
     UInt8 noiseLevel;	
 	UInt8 StereoBase;
+	UInt16 diagnosticFlags;
+	bool diagnosticBufferPrimed;
+	UInt8 diagnosticReserved;
+	UInt32 diagnosticPhase[2];
 	
 	UInt16 slack;
 	DmaMemory *bdlMem;

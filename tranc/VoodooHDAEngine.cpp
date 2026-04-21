@@ -72,6 +72,198 @@ void VoodooHDAEngine::messageHandler(UInt32 type, const char *format, ...)
 
 bool    VoodooHDAEngine::driverDesiresHiResSampleIntervals(void) { return false;}
 
+bool VoodooHDAEngine::diagnosticsEnabled() const
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	return false;
+#else
+	return mChannel &&
+	       mChannel->direction == PCMDIR_PLAY &&
+	       ((mChannel->diagnosticFlags & kVoodooHDADiagEnable) != 0);
+#endif
+}
+
+UInt16 VoodooHDAEngine::diagnosticFlags() const
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	return 0;
+#else
+	return mChannel ? mChannel->diagnosticFlags : 0;
+#endif
+}
+
+bool VoodooHDAEngine::diagnosticUsesMixTone() const
+{
+	UInt16 flags = diagnosticFlags();
+	return diagnosticsEnabled() &&
+	       ((flags & kVoodooHDADiagInjectMixTone) != 0) &&
+	       ((flags & kVoodooHDADiagInjectDirectTone) == 0);
+}
+
+bool VoodooHDAEngine::diagnosticUsesDirectTone() const
+{
+	return diagnosticsEnabled() &&
+	       ((diagnosticFlags() & kVoodooHDADiagInjectDirectTone) != 0);
+}
+
+bool VoodooHDAEngine::diagnosticSkipsErase() const
+{
+	UInt16 flags = diagnosticFlags();
+	return diagnosticsEnabled() &&
+	       (((flags & kVoodooHDADiagSkipErase) != 0) ||
+	        ((flags & kVoodooHDADiagFreezeBuffer) != 0));
+}
+
+bool VoodooHDAEngine::diagnosticBypassesProcessing() const
+{
+	return diagnosticsEnabled() &&
+	       ((diagnosticFlags() & kVoodooHDADiagBypassProcessing) != 0);
+}
+
+bool VoodooHDAEngine::diagnosticFreezesBuffer() const
+{
+	return diagnosticsEnabled() &&
+	       ((diagnosticFlags() & kVoodooHDADiagFreezeBuffer) != 0);
+}
+
+bool VoodooHDAEngine::diagnosticPrimesBufferOnStart() const
+{
+	return diagnosticsEnabled() &&
+	       ((diagnosticFlags() & kVoodooHDADiagPrimeBufferOnStart) != 0);
+}
+
+void VoodooHDAEngine::resetDiagnosticState()
+{
+	if (!mChannel)
+		return;
+
+	mChannel->diagnosticPhase[0] = 0;
+	mChannel->diagnosticPhase[1] = 0;
+	mChannel->diagnosticBufferPrimed = false;
+}
+
+float VoodooHDAEngine::nextDiagnosticSample(UInt32 channelIndex)
+{
+	static const UInt32 freqs[2] = { 440U, 660U };
+	UInt32 sampleRate;
+	UInt32 phaseIndex;
+	UInt64 step;
+	UInt32 phase;
+	UInt32 ramp;
+	SInt32 triangle;
+
+	if (!mChannel)
+		return 0.0f;
+
+	sampleRate = (getSampleRate() && getSampleRate()->whole) ? getSampleRate()->whole : 48000U;
+	phaseIndex = channelIndex & 1U;
+	step = ((static_cast<UInt64>(freqs[phaseIndex]) << 32) / sampleRate);
+	if (step == 0)
+		step = 1;
+
+	mChannel->diagnosticPhase[phaseIndex] += static_cast<UInt32>(step);
+	phase = mChannel->diagnosticPhase[phaseIndex];
+	ramp = phase >> 16;
+	triangle = (ramp < 32768U) ? static_cast<SInt32>(ramp)
+	                           : static_cast<SInt32>(65535U - ramp);
+
+	return (((static_cast<float>(triangle) / 16383.5f) - 1.0f) * 0.35f);
+}
+
+void VoodooHDAEngine::fillDiagnosticMixBuffer(float *floatMixBuf, UInt32 numSamples, UInt32 numChannels)
+{
+	if (!floatMixBuf || !numChannels)
+		return;
+
+	for (UInt32 i = 0; i < numSamples; i += numChannels) {
+		for (UInt32 ch = 0; ch < numChannels; ch++)
+			floatMixBuf[i + ch] = nextDiagnosticSample(ch);
+	}
+}
+
+IOReturn VoodooHDAEngine::fillDiagnosticSampleBuffer(void *sampleBuf, UInt32 firstSampleFrame,
+		UInt32 numSampleFrames, const IOAudioStreamFormat *streamFormat)
+{
+	UInt32 channels;
+	UInt32 bitWidth;
+	UInt32 bitDepth;
+	UInt32 firstSample;
+	UInt32 numSamples;
+	UInt32 padBits;
+
+	if (!sampleBuf || !streamFormat)
+		return kIOReturnBadArgument;
+
+	channels = streamFormat->fNumChannels;
+	if (!channels)
+		return kIOReturnBadArgument;
+
+	bitWidth = streamFormat->fBitWidth;
+	bitDepth = streamFormat->fBitDepth ? streamFormat->fBitDepth : bitWidth;
+	firstSample = firstSampleFrame * channels;
+	numSamples = numSampleFrames * channels;
+	padBits = (bitWidth > bitDepth) ? (bitWidth - bitDepth) : 0;
+
+	if (streamFormat->fSampleFormat == kIOAudioStreamSampleFormatLinearPCM &&
+	    streamFormat->fNumericRepresentation == kIOAudioStreamNumericRepresentationSignedInt) {
+		switch (bitWidth) {
+			case 8: {
+				SInt8 *outBuf = reinterpret_cast<SInt8 *>(sampleBuf) + firstSample;
+				for (UInt32 i = 0; i < numSamples; i++)
+					outBuf[i] = static_cast<SInt8>(nextDiagnosticSample(i) * 127.0f);
+				return kIOReturnSuccess;
+			}
+			case 16: {
+				SInt16 *outBuf = reinterpret_cast<SInt16 *>(sampleBuf) + firstSample;
+				for (UInt32 i = 0; i < numSamples; i++)
+					outBuf[i] = static_cast<SInt16>(nextDiagnosticSample(i) * 32767.0f);
+				return kIOReturnSuccess;
+			}
+			case 32: {
+				SInt32 *outBuf = reinterpret_cast<SInt32 *>(sampleBuf) + firstSample;
+				const UInt32 maxValue = (bitDepth >= 31) ? 0x7fffffffU : ((1U << (bitDepth - 1)) - 1U);
+				for (UInt32 i = 0; i < numSamples; i++) {
+					SInt32 sample = static_cast<SInt32>(nextDiagnosticSample(i) * static_cast<float>(maxValue));
+					if (padBits)
+						sample *= static_cast<SInt32>(1U << padBits);
+					outBuf[i] = sample;
+				}
+				return kIOReturnSuccess;
+			}
+			default:
+				break;
+		}
+	} else if (streamFormat->fSampleFormat == kIOAudioStreamSampleFormatLinearPCM &&
+	           streamFormat->fNumericRepresentation == kIOAudioStreamNumericRepresentationIEEE754Float &&
+	           bitWidth == 32 && bitDepth == 32) {
+		float *outBuf = reinterpret_cast<float *>(sampleBuf) + firstSample;
+		for (UInt32 i = 0; i < numSamples; i++)
+			outBuf[i] = nextDiagnosticSample(i);
+		return kIOReturnSuccess;
+	}
+
+	return kIOReturnUnsupported;
+}
+
+void VoodooHDAEngine::primeDiagnosticBuffer()
+{
+	const IOAudioStreamFormat *streamFormat;
+
+	if (!diagnosticsEnabled() || !mStream || !mChannel || !mChannel->buffer || !mNumSampleFrames)
+		return;
+
+	streamFormat = mStream->getFormat();
+	if (!streamFormat)
+		return;
+
+	if (fillDiagnosticSampleBuffer(reinterpret_cast<void *>(mChannel->buffer->virtAddr), 0,
+	                               mNumSampleFrames, streamFormat) == kIOReturnSuccess) {
+		mChannel->diagnosticBufferPrimed = true;
+		if (mDigitalStream)
+			mDigitalStream->noteClippedPosition(mNumSampleFrames);
+	}
+}
+
 /******************************************************************************************/
 /******************************************************************************************/
 
@@ -422,6 +614,7 @@ bool VoodooHDAEngine::initHardware(IOService *provider)
 	mChannel->noiseLevel = mDevice->noiseLevel;
 	mChannel->useStereo  = mDevice->useStereo;
 	mChannel->StereoBase = mDevice->StereoBase;
+	resetDiagnosticState();
 	
 	result = true;
 done:
@@ -773,9 +966,12 @@ IOReturn VoodooHDAEngine::performAudioEngineStart()
 	// RUN bit is set.  Anchoring fLastLoopTime *before* DMA starts makes the first loop period
 	// appear longer than it is; at the first BCIS the loop-count increment causes a timing
 	// discontinuity → crackle.
+	resetDiagnosticState();
 	mDevice->channelStart(mChannel);
 	if (mDigitalStream)
 		mDigitalStream->resetClipPosition(0);
+	if (diagnosticPrimesBufferOnStart())
+		primeDiagnosticBuffer();
 	takeTimeStamp(false);
 
 	return kIOReturnSuccess;
@@ -787,6 +983,7 @@ IOReturn VoodooHDAEngine::performAudioEngineStop()
 
 //	logMsg("calling channelStop() for channel %d\n", getEngineId());
 	mDevice->channelStop(mChannel);
+	resetDiagnosticState();
 
 	return kIOReturnSuccess;
 }
@@ -861,6 +1058,9 @@ IOReturn VoodooHDAEngine::eraseOutputSamples(const void *mixBuf, void *sampleBuf
 {
 	/* Match AppleGFXHDAEngine::eraseOutputSamples(): zero the float mix region and
 	 * the published sample-buffer region explicitly rather than inheriting the base hook implicitly. */
+	if (diagnosticSkipsErase())
+		return kIOReturnSuccess;
+
 	if (mixBuf && streamFormat) {
 		UInt32 firstSample = firstSampleFrame * streamFormat->fNumChannels;
 		UInt32 numSamples = numSampleFrames * streamFormat->fNumChannels;
@@ -963,6 +1163,7 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			setNumSampleFramesPerBuffer(mNumSampleFrames);
 			if (mDigitalStream)
 				mDigitalStream->resetPositionState();
+			resetDiagnosticState();
 
 		logMsg("buffer size: %ld, channels: %d, bit depth: %d, # samp. frames: %ld\n", (long int)mBufferSize,
 				channels, newFormat->fBitDepth, (long int)mNumSampleFrames);
@@ -978,6 +1179,7 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			}
 			if (mDigitalStream)
 				mDigitalStream->resetPositionState();
+			resetDiagnosticState();
 			/* Recalculate sample offsets for the new rate, as Apple does in
 			 * recalculateEnginesSampleOffset() / recalculateEnginesSampleLatency(). */
 			recalculateSampleOffsets(newSampleRate->whole);

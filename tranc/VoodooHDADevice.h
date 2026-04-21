@@ -388,6 +388,8 @@ public:
 	
 	void changeSliderValue(UInt8 tabNum, UInt8 sliderNum, UInt8 newValue);
 	void setMath(UInt8 tabNum, UInt8 sliderNum, UInt8 newValue);
+	void setDiagnosticFlags(UInt8 tabNum, UInt16 flags);
+	void setDebugLevel(UInt8 level);
 	
 	//Создаем разделяемую область памяти, откуда будет брать информацию PrefPanel
 	void createPrefPanelMemoryBuf(FunctionGroup *funcGroup);
