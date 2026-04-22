@@ -870,9 +870,12 @@ bool VoodooHDADevice::createAudioEngine(Channel *channel)
     bool hasPresence = false;
 
     if (isHDMI && hdmiPin != (nid_t)-1 && mNumHDMIEngines < 16) {
-      UInt32 pinSense = sendCommand(HDA_CMD_GET_PIN_SENSE(channel->funcGroup->codec->cad, hdmiPin),
-                                     channel->funcGroup->codec->cad);
-      hasPresence = (pinSense & (1U << 31)) != 0;
+      Codec *codec = channel->funcGroup->codec;
+      UInt32 pinSense = sendCommand(HDA_CMD_GET_PIN_SENSE(codec->cad, hdmiPin), codec->cad);
+      bool presence = (pinSense & (1U << 31)) != 0;
+      bool eldValid = (pinSense & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0;
+      hasPresence = presence ||
+		    (isAtiHdmiCodec(codec) && appleGfxHdaAmdUsesCachedELDPresence(codec->deviceId) && eldValid);
 
       HDMIEngineSlot *slot = &mHDMIEngines[mNumHDMIEngines++];
       slot->engine = audioEngine;
@@ -2170,7 +2173,13 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 		HDMIEngineSlot *slot = &mHDMIEngines[i];
 		if (!slot->engine) continue;
 		pinSenses[i] = sendCommand(HDA_CMD_GET_PIN_SENSE(slot->cad, slot->pinNid), slot->cad);
-		presence[i] = (pinSenses[i] & (1U << 31)) != 0;
+		Codec *codec = mCodecs[slot->cad];
+		bool hasPresence = (pinSenses[i] & (1U << 31)) != 0;
+		bool eldValid = (pinSenses[i] & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0;
+		if (!hasPresence && codec && isAtiHdmiCodec(codec) &&
+		    appleGfxHdaAmdUsesCachedELDPresence(codec->deviceId) && eldValid)
+			hasPresence = true;
+		presence[i] = hasPresence;
 		if (presence[i]) {
 			presenceCount++;
 			lastPresenceIdx = i;

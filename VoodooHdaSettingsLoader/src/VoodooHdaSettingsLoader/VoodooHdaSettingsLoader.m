@@ -335,7 +335,7 @@ bool loadOneDevice(NSString* servicePath, ChannelInfo const* chInfo)
 
 #if VOODOO_HDA_DEBUG_BUILD
 	if (driverInfo[0].buildFlags & kVoodooHDABuildSupportsDebug)
-		sendDebug(connect, chInfo[0].debugLevel);
+		sendDebug(connect, 0);
 #endif
 
 	res = true;

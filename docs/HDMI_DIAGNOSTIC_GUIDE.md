@@ -108,6 +108,7 @@ Interpretation:
 Use `Verbose logging` only while reproducing the fault.
 
 In current debug builds, the extra HDMI, ELD and framebuffer diagnostics are also routed through this runtime log level. Keep it at `Level 0` for normal use, even with the debug driver installed.
+The saved settings loader now restores debug builds with `Verbose logging = Level 0` by default, so noisy field captures do not remain enabled after reboot or reinstall.
 
 Recommended usage:
 - start from `Level 0`

@@ -421,6 +421,32 @@ static inline UInt32 appleGfxHdaAmdMemoryDescCoeffForCodec(UInt16 deviceId)
 	}
 }
 
+static inline bool appleGfxHdaAmdSupportsDisableSlots(UInt16 deviceId)
+{
+	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+		case kAppleGFXHDAAmdFamilyRS710:
+		case kAppleGFXHDAAmdFamilyRS730:
+		case kAppleGFXHDAAmdFamilyRS780:
+		case kAppleGFXHDAAmdFamilyPark:
+			return false;
+		default:
+			return true;
+	}
+}
+
+static inline bool appleGfxHdaAmdUsesCachedELDPresence(UInt16 deviceId)
+{
+	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+		case kAppleGFXHDAAmdFamilyRS710:
+		case kAppleGFXHDAAmdFamilyRS730:
+		case kAppleGFXHDAAmdFamilyRS780:
+		case kAppleGFXHDAAmdFamilyPark:
+			return true;
+		default:
+			return false;
+	}
+}
+
 /* Rev3+ ATI codecs (0x1002aa01 with revision >= 0x03) support single-channel remap mode */
 static inline bool isAtiHdmiRev3(Codec *codec) {
 	return (CODEC_ID(codec) == 0x1002aa01) &&

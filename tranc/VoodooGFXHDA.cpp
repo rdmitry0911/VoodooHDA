@@ -314,6 +314,7 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 	nid_t nid_pin;
 	Widget *widget_pin;
 	bool atiCodec = isAtiHdmiCodec(funcGroup->codec);
+	bool supportsDisableSlots = appleGfxHdaAmdSupportsDisableSlots(funcGroup->codec->deviceId);
 	mDevice->logMsg("HDMI streamSetup dac=%d ati=%d totalchn=%d totalext=%d codec=0x%04x:0x%04x family=%s\n",
 			dac, atiCodec, totalchn, totalext, funcGroup->codec->vendorId, funcGroup->codec->deviceId,
 			appleGfxHdaAmdCodecFamilyName(funcGroup->codec->deviceId));
@@ -403,8 +404,10 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 				UInt16 slotVerb;
 				if (k < totalchn)
 					slotVerb = (((hdmich[totalext == 0 ? 0 : 1][totalchn - 1] >> (k * 4)) & 0xf) << 4) | k;
-				else
+				else if (supportsDisableSlots)
 					slotVerb = 0xf0 | k;
+				else
+					continue;
 				mDevice->sendCommand(HDA_CMD_SET_HDMI_CHAN_SLOT(cad, nid_pin, slotVerb), cad);
 			}
 
@@ -426,8 +429,9 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 				mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_INDEX(cad, nid_pin, 0x00), cad);
 				mDevice->sendCommand(HDA_CMD_SET_HDMI_DIP_XMIT(cad, nid_pin, 0xc0), cad);
 			}
-			mDevice->logMsg("HDMI ATI path + CHAN_SLOT + InfoFrame + DIP_XMIT=0xc0 nid=%d ca=0x%02x chn=%d\n",
-					nid_pin, hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn);
+			mDevice->logMsg("HDMI ATI path + CHAN_SLOT + InfoFrame + DIP_XMIT=0xc0 nid=%d ca=0x%02x chn=%d disableSlots=%d\n",
+					nid_pin, hdmica[totalext == 0 ? 0 : 1][totalchn - 1], totalchn,
+					supportsDisableSlots ? 1 : 0);
 			if (dumpGPUState && mDevice->mFBNotifier)
 				mDevice->mFBNotifier->diagnosticDumpGPUState("after-ati-stream-setup", cad, nid_pin);
 			continue;

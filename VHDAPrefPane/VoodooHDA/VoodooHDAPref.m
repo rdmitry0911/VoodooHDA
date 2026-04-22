@@ -1050,6 +1050,7 @@ failure:
 	NSError *outputError;
 	NSInteger bytesWritten;
 	NSString *nPath = [@"~/Library/Preferences/VoodooHDA.settings.plist" stringByExpandingTildeInPath];
+	NSMutableData *deviceData = nil;
 	if (!services || currentService < 0)
 		goto failure;
 	outerSettings = [NSMutableDictionary dictionaryWithCapacity:2U];
@@ -1062,8 +1063,13 @@ failure:
 		}
 		if (!(chInfo = updateChannelInfo(device)))
 			continue;
-		[innerSettings setObject:[NSData dataWithBytes:chInfo length:(chInfo->numChannels * sizeof *chInfo)]
-						  forKey:device];
+		deviceData = [NSMutableData dataWithBytes:chInfo length:(chInfo->numChannels * sizeof *chInfo)];
+		if (deviceData) {
+			ChannelInfo *savedInfo = (ChannelInfo *)[deviceData mutableBytes];
+			for (UInt32 i = 0; i < chInfo->numChannels; ++i)
+				savedInfo[i].debugLevel = 0;
+			[innerSettings setObject:deviceData forKey:device];
+		}
 	}
 	if (chInfo) {
 		free(chInfo);
