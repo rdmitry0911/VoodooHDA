@@ -54,6 +54,25 @@ Common commands:
 
 Telemetry includes channel type, codec id/family, stream id, DMA geometry, `SDLPIB` link position, current sample frame, clip position and counters for clip/direct-tone/mix-tone/erase activity. This is the preferred one-shot capture format for comparing working and failing cards.
 
+## Automated Collection Script
+
+The release also includes `vhda_collect.sh`. Use it when the debug driver is already loaded and you want a repeatable field bundle without opening PrefPane.
+
+Example:
+- unzip `VoodooHDA-Release335-vhda_diag.zip`
+- run `chmod +x vhda_diag vhda_msgbuf vhda_collect.sh`
+- run `VHDA_COLLECT_SECONDS=8 ./vhda_collect.sh`
+- start playback when the script prints the instruction line
+- send back the generated `/tmp/vhda_diag_*.tar.gz`
+
+The script collects:
+- loaded `VoodooHDADevice` services
+- diagnostic flag names
+- channel list before/during/after playback
+- telemetry before/during/after playback
+- `ioreg` and `kextstat` snapshots
+- driver message buffer when `vhda_msgbuf` is bundled
+
 ## Recommended Test Order
 
 Use the same HDMI/DP playback channel for all tests.
@@ -221,6 +240,7 @@ When collecting a field log, always include:
 - `vhda_diag list`
 - `vhda_diag get all` before playback
 - `vhda_diag get <channel>` while the fault is audible
+- or preferably the archive produced by `vhda_collect.sh`
 
 For short-file glitches, note specifically:
 - whether playback continued after the file ended
