@@ -311,6 +311,13 @@ typedef struct _Channel {
 	bool diagnosticBufferPrimed;
 	UInt8 diagnosticReserved;
 	UInt32 diagnosticPhase[2];
+	UInt32 diagnosticClipCalls;
+	UInt32 diagnosticMixToneFills;
+	UInt32 diagnosticDirectToneFills;
+	UInt32 diagnosticEraseCalls;
+	UInt32 diagnosticEraseSkips;
+	UInt32 diagnosticLastFirstFrame;
+	UInt32 diagnosticLastNumFrames;
 	
 	UInt16 slack;
 	DmaMemory *bdlMem;

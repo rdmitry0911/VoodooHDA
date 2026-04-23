@@ -3762,6 +3762,11 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 	bool bypassProcessing = diagnosticBypassesProcessing();
 	bool SSE2 = mChannel->vectorize;
 	UInt32 noiseMask = (~0U) << mChannel->noiseLevel;
+	if (mChannel) {
+		mChannel->diagnosticClipCalls++;
+		mChannel->diagnosticLastFirstFrame = firstSampleFrame;
+		mChannel->diagnosticLastNumFrames = numSampleFrames;
+	}
 
 	// Stereo widening (base > 0) or narrowing (base < 0)
 	bool Stereo = mChannel->useStereo;
@@ -3790,12 +3795,17 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 		return kIOReturnSuccess;
 	}
 
-	if (diagnosticMixTone)
+	if (diagnosticMixTone) {
 		fillDiagnosticMixBuffer(floatMixBuf, numSamples, streamFormat->fNumChannels);
+		if (mChannel)
+			mChannel->diagnosticMixToneFills++;
+	}
 
 	if (diagnosticDirectTone) {
 		IOReturn result = fillDiagnosticSampleBuffer(sampleBuf, firstSampleFrame, numSampleFrames, streamFormat);
 		if (result == kIOReturnSuccess) {
+			if (mChannel)
+				mChannel->diagnosticDirectToneFills++;
 			if (diagnosticFreeze)
 				mChannel->diagnosticBufferPrimed = true;
 			if (appleDigitalClipPath && mDigitalStream)

@@ -140,6 +140,13 @@ void VoodooHDAEngine::resetDiagnosticState()
 	mChannel->diagnosticPhase[0] = 0;
 	mChannel->diagnosticPhase[1] = 0;
 	mChannel->diagnosticBufferPrimed = false;
+	mChannel->diagnosticClipCalls = 0;
+	mChannel->diagnosticMixToneFills = 0;
+	mChannel->diagnosticDirectToneFills = 0;
+	mChannel->diagnosticEraseCalls = 0;
+	mChannel->diagnosticEraseSkips = 0;
+	mChannel->diagnosticLastFirstFrame = 0;
+	mChannel->diagnosticLastNumFrames = 0;
 }
 
 float VoodooHDAEngine::nextDiagnosticSample(UInt32 channelIndex)
@@ -259,6 +266,9 @@ void VoodooHDAEngine::primeDiagnosticBuffer()
 	if (fillDiagnosticSampleBuffer(reinterpret_cast<void *>(mChannel->buffer->virtAddr), 0,
 	                               mNumSampleFrames, streamFormat) == kIOReturnSuccess) {
 		mChannel->diagnosticBufferPrimed = true;
+		mChannel->diagnosticDirectToneFills++;
+		mChannel->diagnosticLastFirstFrame = 0;
+		mChannel->diagnosticLastNumFrames = mNumSampleFrames;
 		if (mDigitalStream)
 			mDigitalStream->noteClippedPosition(mNumSampleFrames);
 	}
@@ -1058,8 +1068,16 @@ IOReturn VoodooHDAEngine::eraseOutputSamples(const void *mixBuf, void *sampleBuf
 {
 	/* Match AppleGFXHDAEngine::eraseOutputSamples(): zero the float mix region and
 	 * the published sample-buffer region explicitly rather than inheriting the base hook implicitly. */
-	if (diagnosticSkipsErase())
+	if (mChannel) {
+		mChannel->diagnosticEraseCalls++;
+		mChannel->diagnosticLastFirstFrame = firstSampleFrame;
+		mChannel->diagnosticLastNumFrames = numSampleFrames;
+	}
+	if (diagnosticSkipsErase()) {
+		if (mChannel)
+			mChannel->diagnosticEraseSkips++;
 		return kIOReturnSuccess;
+	}
 
 	if (mixBuf && streamFormat) {
 		UInt32 firstSample = firstSampleFrame * streamFormat->fNumChannels;

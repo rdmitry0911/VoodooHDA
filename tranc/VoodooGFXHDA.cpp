@@ -305,6 +305,16 @@ UInt32 VoodooGFXHDAController::getLinkPosition(Channel *channel, bool *valid)
 	return position;
 }
 
+UInt32 VoodooGFXHDAController::getClippedPosition(Channel *channel, bool *active)
+{
+	VoodooGFXHDAStream *stream = lookupStream(channel);
+
+	if (active)
+		*active = stream ? stream->isActive() : false;
+
+	return stream ? stream->getClippedPosition() : 0;
+}
+
 void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc *assoc, int totalchn, int totalext)
 {
 	FunctionGroup *funcGroup = channel->funcGroup;

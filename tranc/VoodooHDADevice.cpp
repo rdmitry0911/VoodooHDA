@@ -1482,6 +1482,24 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 #endif
 	}
 
+	if ((action & 0xFF) == kVoodooHDAActionGetDiagTelemetry) {
+#if !VOODOO_HDA_DEBUG_BUILD
+		*outSize = 0;
+		*outData = NULL;
+		return kIOReturnUnsupported;
+#else
+		UInt8 ch = ((action >> 8) & 0xFF);
+		if (!device->getDiagnosticTelemetry(ch, &device->mDiagTelemetry)) {
+			*outSize = 0;
+			*outData = NULL;
+			return kIOReturnBadArgument;
+		}
+		*outSize = sizeof(device->mDiagTelemetry);
+		*outData = &device->mDiagTelemetry;
+		return result;
+#endif
+	}
+
 	//Команда от моей версии getDump для обновления данных об усилении
 	if((action & 0xFF)  == kVoodooHDAActionGetMixers) {
 
@@ -3564,6 +3582,98 @@ void VoodooHDADevice::setDebugLevel(UInt8 level)
 	updatePrefPanelMemoryBuf();
 #else
 	(void)level;
+#endif
+}
+
+bool VoodooHDADevice::getDiagnosticTelemetry(UInt8 tabNum, VoodooHDADiagTelemetry *telemetry)
+{
+#if !VOODOO_HDA_DEBUG_BUILD
+	(void)tabNum;
+	(void)telemetry;
+	return false;
+#else
+	VoodooHDAEngine *engine;
+	Channel *channel;
+	PcmDevice *pcmDevice;
+	Codec *codec = NULL;
+	bool linkValid = false;
+	bool streamActive = false;
+	UInt32 linkPosition = 0;
+	UInt32 clippedPosition = 0;
+
+	if (!telemetry)
+		return false;
+
+	engine = lookupEngine(tabNum);
+	if (!engine || !engine->mChannel)
+		return false;
+
+	channel = engine->mChannel;
+	pcmDevice = channel->pcmDevice;
+	if (channel->funcGroup)
+		codec = channel->funcGroup->codec;
+
+	bzero(telemetry, sizeof(*telemetry));
+	telemetry->magic = kVoodooHDADiagTelemetryMagic;
+	telemetry->version = kVoodooHDADiagTelemetryVersion;
+	telemetry->size = sizeof(*telemetry);
+	telemetry->channel = tabNum;
+	telemetry->numChannels = mNumChannels;
+	telemetry->buildFlags = kVoodooHDABuildSupportsDebug;
+	telemetry->debugLevel = static_cast<UInt8>(mVerbose & 0xff);
+	telemetry->digital = pcmDevice ? pcmDevice->digital : 0;
+	telemetry->direction = static_cast<SInt8>(channel->direction);
+	telemetry->running = (channel->flags & HDAC_CHN_RUNNING) ? 1 : 0;
+	telemetry->diagnosticFlags = channel->diagnosticFlags;
+	telemetry->codecVendor = codec ? codec->vendorId : 0;
+	telemetry->codecDevice = codec ? codec->deviceId : 0;
+	telemetry->codecFamily = codec ? static_cast<UInt16>(appleGfxHdaAmdCodecFamily(codec->deviceId)) : 0;
+	telemetry->speed = channel->speed;
+	telemetry->format = channel->format;
+	telemetry->streamId = static_cast<UInt32>(channel->streamId);
+	telemetry->streamOffset = static_cast<UInt32>(channel->off);
+	telemetry->numBlocks = channel->numBlocks;
+	telemetry->blockSize = channel->blockSize;
+	telemetry->bufferSize = channel->buffer ? static_cast<UInt32>(channel->buffer->size) : 0;
+	telemetry->slack = channel->slack;
+	telemetry->numSampleFrames = engine->mNumSampleFrames;
+	telemetry->sampleSize = engine->mSampleSize;
+	telemetry->diagnosticBufferPrimed = channel->diagnosticBufferPrimed ? 1 : 0;
+	telemetry->diagnosticClipCalls = channel->diagnosticClipCalls;
+	telemetry->diagnosticMixToneFills = channel->diagnosticMixToneFills;
+	telemetry->diagnosticDirectToneFills = channel->diagnosticDirectToneFills;
+	telemetry->diagnosticEraseCalls = channel->diagnosticEraseCalls;
+	telemetry->diagnosticEraseSkips = channel->diagnosticEraseSkips;
+	telemetry->diagnosticLastFirstFrame = channel->diagnosticLastFirstFrame;
+	telemetry->diagnosticLastNumFrames = channel->diagnosticLastNumFrames;
+
+	if (engine->mPortName)
+		strlcpy(telemetry->channelName, engine->mPortName, sizeof(telemetry->channelName));
+
+	if (mGFXController && mGFXController->ownsChannel(channel)) {
+		linkPosition = mGFXController->getLinkPosition(channel, &linkValid);
+		clippedPosition = mGFXController->getClippedPosition(channel, &streamActive);
+	} else {
+		linkPosition = static_cast<UInt32>(channelGetPosition(channel));
+		linkValid = true;
+	}
+
+	telemetry->streamActive = streamActive ? 1 : 0;
+	telemetry->linkPosition = linkPosition;
+	telemetry->linkPositionValid = linkValid ? 1 : 0;
+	telemetry->currentSampleFrame = engine->getCurrentSampleFrame();
+	telemetry->clippedPosition = clippedPosition;
+
+	for (int i = 0; i < mNumHDMIEngines; i++) {
+		const HDMIEngineSlot *slot = &mHDMIEngines[i];
+		if (slot->channel != channel)
+			continue;
+		telemetry->pinNid = slot->pinNid;
+		telemetry->cad = slot->cad;
+		break;
+	}
+
+	return true;
 #endif
 }
 

@@ -1,10 +1,12 @@
 # HDMI Diagnostic Guide
 
-This guide is for the debug-only HDMI/DP diagnostic controls exposed by the `VoodooHDA` debug driver and debug `VoodooHDA.prefPane`.
+This guide is for the debug-only HDMI/DP diagnostic controls exposed by the `VoodooHDA` debug driver, debug `VoodooHDA.prefPane`, and the `vhda_diag` command line tool.
 
 The diagnostic controls live on the `Debug` pane in the PrefPane and are available only when both conditions are true:
 - the installed `VoodooHDA.kext` was built with `VOODOO_HDA_DEBUG_BUILD=1`
 - the installed `VoodooHDA.prefPane` was built with `VOODOO_HDA_DEBUG_BUILD=1`
+
+For automated collection, prefer `vhda_diag`. It talks to the same debug-only user-client API as the PrefPane, but can also read compact telemetry from the driver.
 
 ## What The Tools Are For
 
@@ -33,6 +35,24 @@ The current controls are:
 - `Verbose logging`
 
 `Inject tone direct to sample buffer` has priority over `Inject tone in mix buffer`.
+
+## Command Line Tool
+
+`vhda_diag` uses zero-based channel indexes. Run `vhda_diag list` first and use the `channel=` value it prints.
+
+Common commands:
+- `vhda_diag services` lists loaded `VoodooHDADevice` services.
+- `vhda_diag list` lists channels, digital type, current diagnostic flags and debug level.
+- `vhda_diag flags` prints all supported flag names and masks.
+- `vhda_diag get all` prints telemetry for every channel.
+- `vhda_diag get 0` prints telemetry for channel `0`.
+- `vhda_diag set 0 enable,direct-tone,prime,freeze` replaces channel `0` diagnostic flags.
+- `vhda_diag enable 0 skip-erase` adds one or more flags.
+- `vhda_diag disable 0 freeze` removes one or more flags.
+- `vhda_diag clear 0` clears all diagnostic flags on channel `0`.
+- `vhda_diag verbose 0` sets runtime debug logging level.
+
+Telemetry includes channel type, codec id/family, stream id, DMA geometry, `SDLPIB` link position, current sample frame, clip position and counters for clip/direct-tone/mix-tone/erase activity. This is the preferred one-shot capture format for comparing working and failing cards.
 
 ## Recommended Test Order
 
@@ -198,6 +218,9 @@ When collecting a field log, always include:
 - bit depth / format
 - the exact diagnostic flags used
 - whether the test file was short or long
+- `vhda_diag list`
+- `vhda_diag get all` before playback
+- `vhda_diag get <channel>` while the fault is audible
 
 For short-file glitches, note specifically:
 - whether playback continued after the file ended

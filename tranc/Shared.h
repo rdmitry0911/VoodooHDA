@@ -8,6 +8,9 @@
 #endif
 
 #define kVoodooHDAClassName	"VoodooHDADevice"
+#ifndef SOUND_MIXER_NRDEVICES
+#define SOUND_MIXER_NRDEVICES 25
+#endif
 
 enum {
     kVoodooHDAActionMethod = 0,
@@ -51,7 +54,8 @@ enum {
 	kVoodooHDAActionGetMixers = 0x50,
 	kVoodooHDAActionSetMath = 0x60,
 	kVoodooHDAActionSetDiag = 0x70,
-	kVoodooHDAActionSetDebug = 0x80
+	kVoodooHDAActionSetDebug = 0x80,
+	kVoodooHDAActionGetDiagTelemetry = 0x90
 };
 
 enum {
@@ -107,5 +111,54 @@ typedef struct _ChannelInfo {
 	UInt8 debugLevel;
 	UInt8 buildFlags;
 } ChannelInfo;
+
+enum {
+	kVoodooHDADiagTelemetryMagic = 0x56484441U, /* VHDA */
+	kVoodooHDADiagTelemetryVersion = 1
+};
+
+typedef struct _VoodooHDADiagTelemetry {
+	UInt32 magic;
+	UInt16 version;
+	UInt16 size;
+	UInt8 channel;
+	UInt8 numChannels;
+	UInt8 buildFlags;
+	UInt8 debugLevel;
+	UInt8 digital;
+	SInt8 direction;
+	UInt8 running;
+	UInt8 streamActive;
+	UInt16 diagnosticFlags;
+	UInt16 codecVendor;
+	UInt16 codecDevice;
+	UInt16 codecFamily;
+	UInt16 reserved0;
+	UInt32 speed;
+	UInt32 format;
+	UInt32 streamId;
+	UInt32 streamOffset;
+	UInt32 numBlocks;
+	UInt32 blockSize;
+	UInt32 bufferSize;
+	UInt32 slack;
+	UInt32 linkPosition;
+	UInt32 linkPositionValid;
+	UInt32 currentSampleFrame;
+	UInt32 numSampleFrames;
+	UInt32 sampleSize;
+	UInt32 clippedPosition;
+	UInt32 diagnosticBufferPrimed;
+	UInt32 diagnosticClipCalls;
+	UInt32 diagnosticMixToneFills;
+	UInt32 diagnosticDirectToneFills;
+	UInt32 diagnosticEraseCalls;
+	UInt32 diagnosticEraseSkips;
+	UInt32 diagnosticLastFirstFrame;
+	UInt32 diagnosticLastNumFrames;
+	UInt32 pinNid;
+	UInt32 cad;
+	char channelName[MAX_SLIDER_TAB_NAME_LENGTH];
+} VoodooHDADiagTelemetry;
 
 #endif

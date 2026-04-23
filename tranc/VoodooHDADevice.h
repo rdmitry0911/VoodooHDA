@@ -377,6 +377,7 @@ public:
 	UInt8 nSliderTabsCount;
 	
 	ChannelInfo *mPrefPanelMemoryBuf;
+	VoodooHDADiagTelemetry mDiagTelemetry;
 	bool mPrefPanelMemoryBufEnabled;
 	size_t mPrefPanelMemoryBufSize;
 	IOLock *mPrefPanelMemoryBufLock;
@@ -390,6 +391,7 @@ public:
 	void setMath(UInt8 tabNum, UInt8 sliderNum, UInt8 newValue);
 	void setDiagnosticFlags(UInt8 tabNum, UInt16 flags);
 	void setDebugLevel(UInt8 level);
+	bool getDiagnosticTelemetry(UInt8 tabNum, VoodooHDADiagTelemetry *telemetry);
 	
 	//Создаем разделяемую область памяти, откуда будет брать информацию PrefPanel
 	void createPrefPanelMemoryBuf(FunctionGroup *funcGroup);
