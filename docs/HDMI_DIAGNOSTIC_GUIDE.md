@@ -54,6 +54,13 @@ Common commands:
 
 Telemetry includes channel type, codec id/family, stream id, DMA geometry, `SDLPIB` link position, current sample frame, clip position and counters for clip/direct-tone/mix-tone/erase activity. This is the preferred one-shot capture format for comparing working and failing cards.
 
+For older ATI HDMI codecs in the `ATI_Park` family, especially `codec=0xaa01`, the Apple-like DMA geometry is a useful sanity check. A running `streamId=4` HDMI channel should report:
+- `bufferSize=196608`
+- `numBlocks=48`
+- `blockSize=4096`
+
+If the same channel still reports `bufferSize=262144 numBlocks=64 blockSize=4096`, the system is still running an older kext or the digital channel did not go through the Apple-like `VoodooGFXHDA` allocator.
+
 ## Automated Collection Script
 
 The release also includes `vhda_collect.sh`. Use it when the debug driver is already loaded and you want a repeatable field bundle without opening PrefPane.

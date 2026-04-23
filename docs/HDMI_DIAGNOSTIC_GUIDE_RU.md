@@ -54,6 +54,13 @@
 
 Телеметрия включает тип канала, codec id/family, stream id, DMA geometry, `SDLPIB` link position, current sample frame, clip position и счётчики clip/direct-tone/mix-tone/erase. Это основной формат для быстрого сравнения рабочей и проблемной карты.
 
+Для старых ATI HDMI codec семейства `ATI_Park`, особенно `codec=0xaa01`, полезно сразу проверять Apple-like DMA geometry. Для активного HDMI-канала с `streamId=4` телеметрия должна показывать:
+- `bufferSize=196608`
+- `numBlocks=48`
+- `blockSize=4096`
+
+Если тот же канал всё ещё показывает `bufferSize=262144 numBlocks=64 blockSize=4096`, значит в системе всё ещё загружен старый kext или digital channel не прошёл через Apple-like allocator `VoodooGFXHDA`.
+
 ## Скрипт Автоматического Сбора
 
 В релиз также входит `vhda_collect.sh`. Используйте его, когда debug-драйвер уже загружен и нужно получить воспроизводимый диагностический архив без открытия PrefPane.

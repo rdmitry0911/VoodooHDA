@@ -603,6 +603,21 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	setupWorkloop();
 	enableEventSources();
 
+	/*
+	 * HDMI/DP PCM channels are attached during scanCodecs() -> pcmAttach() ->
+	 * channelInit().  The Apple-like graphics-audio DMA path must therefore
+	 * exist before codec parsing starts, otherwise digital channels fall back
+	 * to the legacy 262144-byte VoodooHDA ring and never re-enter the
+	 * VoodooGFXHDA allocator.
+	 */
+	if (!mGFXController) {
+		mGFXController = new VoodooGFXHDAController;
+		if (!mGFXController || !mGFXController->init(this)) {
+			errorMsg("error: couldn't initialize VoodooGFXHDAController\n");
+			goto done;
+		}
+	}
+
 	LOCK();
 
 //	logMsg("Starting CORB Engine...\n");
@@ -668,14 +683,6 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 		errorMsg("error: no PCM channels found\n");
 		goto done;
 	}
-	if (!mGFXController) {
-		mGFXController = new VoodooGFXHDAController;
-		if (!mGFXController || !mGFXController->init(this)) {
-			errorMsg("error: couldn't initialize VoodooGFXHDAController\n");
-			goto done;
-		}
-	}
-
 	for (int n = 0; n < mNumChannels; n++) {
 		if (!createAudioEngine(&mChannels[n])) {
 			errorMsg("error: createAudioEngine for channel %d failed\n", n);
@@ -2805,8 +2812,14 @@ Channel *VoodooHDADevice::channelInit(PcmDevice *pcmDevice, int direction)
 	channel->streamId = ++mStreamCount;
 	channel->direction = direction;
 
-	if (direction == PCMDIR_PLAY && pcmDevice->digital >= 2 && mGFXController)
+	if (direction == PCMDIR_PLAY && pcmDevice->digital >= 2) {
+		if (!mGFXController) {
+			errorMsg("error: VoodooGFXHDAController missing during digital channelInit (codec=%04x nid=%d streamId=%d)\n",
+				 channel->funcGroup->codec->deviceId, pcmDevice->funcGroup->nid, channel->streamId);
+			return NULL;
+		}
 		return mGFXController->initializeStreamDMA(channel) ? channel : NULL;
+	}
 
 	channel->blockSize = pcmDevice->chanSize / pcmDevice->chanNumBlocks;
 	channel->numBlocks = pcmDevice->chanNumBlocks;
