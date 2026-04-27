@@ -39,17 +39,25 @@ static void usage(const char *prog)
 {
 	fprintf(stderr,
 	    "Usage:\n"
-	    "  %s services\n"
-	    "  %s list\n"
-	    "  %s flags\n"
-	    "  %s get <channel|all>\n"
-	    "  %s report [channel|all]\n"
-	    "  %s set <channel> <mask|flag[,flag...]>\n"
-	    "  %s enable <channel> <flag[,flag...]>\n"
-	    "  %s disable <channel> <flag[,flag...]>\n"
-	    "  %s clear <channel>\n"
-	    "  %s verbose <0-4>\n",
-	    prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+	    "  %s [--service=N|--service=all] <command> [args...]\n"
+	    "Commands:\n"
+	    "  services\n"
+	    "  list\n"
+	    "  flags\n"
+	    "  get <channel|all>\n"
+	    "  report [channel|all]\n"
+	    "  set <channel> <mask|flag[,flag...]>\n"
+	    "  enable <channel> <flag[,flag...]>\n"
+	    "  disable <channel> <flag[,flag...]>\n"
+	    "  clear <channel>\n"
+	    "  verbose <0-4>\n"
+	    "Options:\n"
+	    "  --service=N      target VoodooHDADevice index N (default 0)\n"
+	    "  --service=all    repeat read-only command for every service\n"
+	    "                   (only valid with list/get/report)\n"
+	    "Env:\n"
+	    "  VHDA_SERVICE     same as --service\n",
+	    prog);
 }
 
 static io_service_t openServiceByIndex(int index)
@@ -74,6 +82,46 @@ static io_service_t openServiceByIndex(int index)
 
 	IOObjectRelease(iter);
 	return service;
+}
+
+static int countServices(void)
+{
+	io_iterator_t iter = IO_OBJECT_NULL;
+	io_service_t service;
+	kern_return_t kr;
+	int count = 0;
+
+	kr = IOServiceGetMatchingServices(kIOMainPortDefault,
+	    IOServiceMatching(kVoodooHDAClassName), &iter);
+	if (kr != KERN_SUCCESS || iter == IO_OBJECT_NULL)
+		return 0;
+
+	while ((service = IOIteratorNext(iter)) != IO_OBJECT_NULL) {
+		IOObjectRelease(service);
+		count++;
+	}
+	IOObjectRelease(iter);
+	return count;
+}
+
+static void getServicePath(int index, char *out, size_t outSize)
+{
+	io_service_t service = openServiceByIndex(index);
+	io_string_t path;
+
+	if (!service) {
+		strncpy(out, "<missing>", outSize);
+		out[outSize - 1] = '\0';
+		return;
+	}
+	if (IORegistryEntryGetPath(service, kIOServicePlane, path) == KERN_SUCCESS) {
+		strncpy(out, path, outSize);
+		out[outSize - 1] = '\0';
+	} else {
+		strncpy(out, "<unknown>", outSize);
+		out[outSize - 1] = '\0';
+	}
+	IOObjectRelease(service);
 }
 
 static int printServices(void)
@@ -104,20 +152,20 @@ static int printServices(void)
 	return index ? 0 : 1;
 }
 
-static kern_return_t openConnection(io_connect_t *connect)
+static kern_return_t openConnection(int serviceIndex, io_connect_t *connect)
 {
-	io_service_t service = openServiceByIndex(0);
+	io_service_t service = openServiceByIndex(serviceIndex);
 	kern_return_t kr;
 
 	if (!service) {
-		fprintf(stderr, "VoodooHDADevice not found\n");
+		fprintf(stderr, "VoodooHDADevice not found at service=%d\n", serviceIndex);
 		return KERN_FAILURE;
 	}
 
 	kr = IOServiceOpen(service, mach_task_self(), 0, connect);
 	IOObjectRelease(service);
 	if (kr != KERN_SUCCESS)
-		fprintf(stderr, "IOServiceOpen failed: 0x%x\n", kr);
+		fprintf(stderr, "IOServiceOpen(service=%d) failed: 0x%x\n", serviceIndex, kr);
 	return kr;
 }
 
@@ -294,7 +342,7 @@ static int setVerbose(io_connect_t connect, UInt8 level)
 	return 0;
 }
 
-int main(int argc, char **argv)
+static int runForService(int serviceIndex, int argc, char **argv, const char *prog)
 {
 	io_connect_t connect = IO_OBJECT_NULL;
 	ChannelInfo *channels = NULL;
@@ -302,21 +350,9 @@ int main(int argc, char **argv)
 	const char *cmd;
 	int rc = 1;
 
-	if (argc < 2) {
-		usage(argv[0]);
-		return 1;
-	}
+	cmd = argv[0];
 
-	cmd = argv[1];
-	if (strcmp(cmd, "services") == 0)
-		return printServices();
-	if (strcmp(cmd, "flags") == 0) {
-		for (size_t i = 0; i < sizeof(kFlags) / sizeof(kFlags[0]); i++)
-			printf("flag=%s mask=0x%04x\n", kFlags[i].name, kFlags[i].flag);
-		return 0;
-	}
-
-	if (openConnection(&connect) != KERN_SUCCESS)
+	if (openConnection(serviceIndex, &connect) != KERN_SUCCESS)
 		return 1;
 
 	channels = copyChannels(connect, &count);
@@ -330,19 +366,19 @@ int main(int argc, char **argv)
 	}
 
 	if (strcmp(cmd, "verbose") == 0) {
-		if (argc != 3) {
-			usage(argv[0]);
+		if (argc != 2) {
+			usage(prog);
 			goto done;
 		}
-		rc = setVerbose(connect, (UInt8)strtoul(argv[2], NULL, 0));
+		rc = setVerbose(connect, (UInt8)strtoul(argv[1], NULL, 0));
 		goto done;
 	}
 
 	if (strcmp(cmd, "get") == 0 || strcmp(cmd, "report") == 0) {
 		int first = 0;
 		int last = (int)count - 1;
-		if (argc >= 3 && strcmp(argv[2], "all") != 0) {
-			first = parseChannel(argv[2], count);
+		if (argc >= 2 && strcmp(argv[1], "all") != 0) {
+			first = parseChannel(argv[1], count);
 			if (first < 0)
 				goto done;
 			last = first;
@@ -351,7 +387,8 @@ int main(int argc, char **argv)
 			VoodooHDADiagTelemetry t;
 			kern_return_t kr = getTelemetry(connect, (UInt8)ch, &t);
 			if (kr != KERN_SUCCESS) {
-				fprintf(stderr, "get telemetry for channel %d failed: 0x%x\n", ch, kr);
+				fprintf(stderr, "get telemetry for channel %d (service=%d) failed: 0x%x\n",
+				    ch, serviceIndex, kr);
 				continue;
 			}
 			printTelemetry(&t);
@@ -364,32 +401,123 @@ int main(int argc, char **argv)
 	    strcmp(cmd, "disable") == 0 || strcmp(cmd, "clear") == 0) {
 		int ch;
 		UInt16 flags;
-		if ((strcmp(cmd, "clear") == 0 && argc != 3) ||
-		    (strcmp(cmd, "clear") != 0 && argc != 4)) {
-			usage(argv[0]);
+		if ((strcmp(cmd, "clear") == 0 && argc != 2) ||
+		    (strcmp(cmd, "clear") != 0 && argc != 3)) {
+			usage(prog);
 			goto done;
 		}
-		ch = parseChannel(argv[2], count);
+		ch = parseChannel(argv[1], count);
 		if (ch < 0)
 			goto done;
 		flags = channels[ch].diagnosticFlags;
 		if (strcmp(cmd, "clear") == 0)
 			flags = 0;
 		else if (strcmp(cmd, "set") == 0)
-			flags = parseFlags(argv[3]);
+			flags = parseFlags(argv[2]);
 		else if (strcmp(cmd, "enable") == 0)
-			flags |= parseFlags(argv[3]);
+			flags |= parseFlags(argv[2]);
 		else
-			flags &= ~parseFlags(argv[3]);
+			flags &= ~parseFlags(argv[2]);
 		rc = setDiag(connect, (UInt8)ch, flags);
 		goto done;
 	}
 
-	usage(argv[0]);
+	usage(prog);
 
 done:
 	free(channels);
 	if (connect)
 		IOServiceClose(connect);
 	return rc;
+}
+
+static bool isReadOnlyCommand(const char *cmd)
+{
+	return strcmp(cmd, "list") == 0 ||
+	    strcmp(cmd, "get") == 0 ||
+	    strcmp(cmd, "report") == 0;
+}
+
+int main(int argc, char **argv)
+{
+	const char *prog = argv[0];
+	int serviceIndex = 0;
+	bool allServices = false;
+	const char *envServ;
+
+	envServ = getenv("VHDA_SERVICE");
+	if (envServ && envServ[0]) {
+		if (strcasecmp(envServ, "all") == 0)
+			allServices = true;
+		else
+			serviceIndex = (int)strtol(envServ, NULL, 0);
+	}
+
+	/* Consume leading --service / -s options (override env). */
+	while (argc >= 2) {
+		const char *arg = argv[1];
+		const char *value = NULL;
+
+		if (strncmp(arg, "--service=", 10) == 0) {
+			value = arg + 10;
+			argv++;
+			argc--;
+		} else if (strcmp(arg, "--service") == 0 || strcmp(arg, "-s") == 0) {
+			if (argc < 3) {
+				usage(prog);
+				return 1;
+			}
+			value = argv[2];
+			argv += 2;
+			argc -= 2;
+		} else {
+			break;
+		}
+		if (strcasecmp(value, "all") == 0) {
+			allServices = true;
+			serviceIndex = 0;
+		} else {
+			allServices = false;
+			serviceIndex = (int)strtol(value, NULL, 0);
+		}
+	}
+
+	if (argc < 2) {
+		usage(prog);
+		return 1;
+	}
+
+	if (strcmp(argv[1], "services") == 0)
+		return printServices();
+	if (strcmp(argv[1], "flags") == 0) {
+		for (size_t i = 0; i < sizeof(kFlags) / sizeof(kFlags[0]); i++)
+			printf("flag=%s mask=0x%04x\n", kFlags[i].name, kFlags[i].flag);
+		return 0;
+	}
+
+	if (allServices) {
+		if (!isReadOnlyCommand(argv[1])) {
+			fprintf(stderr,
+			    "--service=all is only valid with list/get/report; got '%s'\n",
+			    argv[1]);
+			return 1;
+		}
+		int total = countServices();
+		if (total <= 0) {
+			fprintf(stderr, "VoodooHDADevice not found\n");
+			return 1;
+		}
+		int aggregateRc = 0;
+		for (int i = 0; i < total; i++) {
+			char path[512];
+			getServicePath(i, path, sizeof(path));
+			printf("=== service=%d path=%s ===\n", i, path);
+			int rc = runForService(i, argc - 1, argv + 1, prog);
+			if (rc != 0)
+				aggregateRc = rc;
+		}
+		return aggregateRc;
+	}
+
+	return runForService(serviceIndex, argc - 1, argv + 1, prog);
 }

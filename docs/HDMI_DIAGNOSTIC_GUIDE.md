@@ -40,6 +40,8 @@ The current controls are:
 
 `vhda_diag` uses zero-based channel indexes. Run `vhda_diag list` first and use the `channel=` value it prints.
 
+A host can have more than one `VoodooHDADevice` instance — typically one for the discrete GPU HDA and one for the PCH/Intel HDA. Use `vhda_diag services` to list them and pass `--service=N` (or `VHDA_SERVICE=N`) to target a specific instance. Pass `--service=all` to repeat a read-only command (`list`, `get`, `report`) across every service.
+
 Common commands:
 - `vhda_diag services` lists loaded `VoodooHDADevice` services.
 - `vhda_diag list` lists channels, digital type, current diagnostic flags and debug level.

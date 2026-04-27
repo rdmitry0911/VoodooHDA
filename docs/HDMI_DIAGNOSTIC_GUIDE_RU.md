@@ -40,6 +40,8 @@
 
 `vhda_diag` использует zero-based индексы каналов. Сначала выполните `vhda_diag list` и используйте значение `channel=`.
 
+На машине может быть несколько `VoodooHDADevice` (обычно один на дискретный GPU и один на PCH/Intel HDA). Сначала запустите `vhda_diag services`, чтобы увидеть индексы, и используйте `--service=N` (или переменную окружения `VHDA_SERVICE=N`) для выбора целевого сервиса. `--service=all` повторяет read-only команду (`list`, `get`, `report`) для каждого сервиса.
+
 Основные команды:
 - `vhda_diag services` показывает загруженные сервисы `VoodooHDADevice`.
 - `vhda_diag list` показывает каналы, digital type, текущие diagnostic flags и debug level.
