@@ -882,7 +882,7 @@ bool VoodooHDADevice::createAudioEngine(Channel *channel)
       bool presence = (pinSense & (1U << 31)) != 0;
       bool eldValid = (pinSense & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0;
       hasPresence = presence ||
-		    (isAtiHdmiCodec(codec) && appleGfxHdaAmdUsesCachedELDPresence(codec->deviceId) && eldValid);
+		    (isAtiHdmiCodec(codec) && appleGfxHdaAmdUsesCachedELDPresence(codec->hdaPciDeviceId) && eldValid);
 
       HDMIEngineSlot *slot = &mHDMIEngines[mNumHDMIEngines++];
       slot->engine = audioEngine;
@@ -2202,7 +2202,7 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 		bool hasPresence = (pinSenses[i] & (1U << 31)) != 0;
 		bool eldValid = (pinSenses[i] & HDA_CMD_GET_PIN_SENSE_ELD_VALID) != 0;
 		if (!hasPresence && codec && isAtiHdmiCodec(codec) &&
-		    appleGfxHdaAmdUsesCachedELDPresence(codec->deviceId) && eldValid)
+		    appleGfxHdaAmdUsesCachedELDPresence(codec->hdaPciDeviceId) && eldValid)
 			hasPresence = true;
 		presence[i] = hasPresence;
 		if (presence[i]) {
@@ -3640,7 +3640,7 @@ bool VoodooHDADevice::getDiagnosticTelemetry(UInt8 tabNum, VoodooHDADiagTelemetr
 	telemetry->diagnosticFlags = channel->diagnosticFlags;
 	telemetry->codecVendor = codec ? codec->vendorId : 0;
 	telemetry->codecDevice = codec ? codec->deviceId : 0;
-	telemetry->codecFamily = codec ? static_cast<UInt16>(appleGfxHdaAmdCodecFamily(codec->deviceId)) : 0;
+	telemetry->codecFamily = codec ? static_cast<UInt16>(appleGfxHdaAmdCodecFamily(codec->hdaPciDeviceId)) : 0;
 	telemetry->speed = channel->speed;
 	telemetry->format = channel->format;
 	telemetry->streamId = static_cast<UInt32>(channel->streamId);

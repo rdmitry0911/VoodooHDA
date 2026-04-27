@@ -166,15 +166,17 @@ bool VoodooGFXHDAController::initializeStreamDMA(Channel *channel)
 		return false;
 
 	pcmDevice = channel->pcmDevice;
-	coeff = appleGfxHdaAmdMemoryDescCoeffForCodec(channel->funcGroup->codec->deviceId);
+	coeff = appleGfxHdaAmdMemoryDescCoeffForCodec(channel->funcGroup->codec->hdaPciDeviceId);
 	if (coeff != 0) {
 		/* AppleGFXHDA allocates graphics-audio stream memory as
 		 * streamId * coeff * 4, then slices it into 4 KB BDL pages. */
 		pcmDevice->chanSize = channel->streamId * coeff * 4;
 		pcmDevice->chanNumBlocks = pcmDevice->chanSize / HDA_BUFSZ_MIN;
-		mDevice->logMsg("HDMI DMA: codec=%04x family=%s streamId=%d coeff=0x%x chanSize=%u chanNumBlocks=%u blockSize=%u\n",
+		mDevice->logMsg("HDMI DMA: codec=%04x:%04x hdaPci=%04x family=%s streamId=%d coeff=0x%x chanSize=%u chanNumBlocks=%u blockSize=%u\n",
+				channel->funcGroup->codec->vendorId,
 				channel->funcGroup->codec->deviceId,
-				appleGfxHdaAmdCodecFamilyName(channel->funcGroup->codec->deviceId),
+				channel->funcGroup->codec->hdaPciDeviceId,
+				appleGfxHdaAmdCodecFamilyName(channel->funcGroup->codec->hdaPciDeviceId),
 				channel->streamId, (unsigned)coeff, (unsigned)pcmDevice->chanSize,
 				(unsigned)pcmDevice->chanNumBlocks,
 				(unsigned)(pcmDevice->chanSize / pcmDevice->chanNumBlocks));
@@ -324,10 +326,12 @@ void VoodooGFXHDAController::setupStream(Channel *channel, nid_t dac, AudioAssoc
 	nid_t nid_pin;
 	Widget *widget_pin;
 	bool atiCodec = isAtiHdmiCodec(funcGroup->codec);
-	bool supportsDisableSlots = appleGfxHdaAmdSupportsDisableSlots(funcGroup->codec->deviceId);
-	mDevice->logMsg("HDMI streamSetup dac=%d ati=%d totalchn=%d totalext=%d codec=0x%04x:0x%04x family=%s\n",
-			dac, atiCodec, totalchn, totalext, funcGroup->codec->vendorId, funcGroup->codec->deviceId,
-			appleGfxHdaAmdCodecFamilyName(funcGroup->codec->deviceId));
+	bool supportsDisableSlots = appleGfxHdaAmdSupportsDisableSlots(funcGroup->codec->hdaPciDeviceId);
+	mDevice->logMsg("HDMI streamSetup dac=%d ati=%d totalchn=%d totalext=%d codec=0x%04x:0x%04x hdaPci=0x%04x family=%s\n",
+			dac, atiCodec, totalchn, totalext,
+			funcGroup->codec->vendorId, funcGroup->codec->deviceId,
+			funcGroup->codec->hdaPciDeviceId,
+			appleGfxHdaAmdCodecFamilyName(funcGroup->codec->hdaPciDeviceId));
 
 	const static UInt8 hdmica[2][8] =
 	{{ 0x02, 0x00, 0x04, 0x08, 0x0a, 0x0e, 0x12, 0x12 },

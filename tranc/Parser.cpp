@@ -73,6 +73,9 @@ void VoodooHDADevice::scanCodecs()
 			codec->numVerbsSent = 0;
 			codec->numFuncGroups = 0;
 			codec->cad = i;
+			/* AppleGFXHDA dispatches the AMD HDMI subclass by the PCI device
+			 * id of the HDA function, not by the codec id from the verb. */
+			codec->hdaPciDeviceId = static_cast<UInt16>((mDeviceId >> 16) & 0xFFFFU);
 			mCodecs[i] = codec;
 			probeCodec(codec);
 		}

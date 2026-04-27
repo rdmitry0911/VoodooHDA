@@ -335,6 +335,14 @@ typedef struct _Codec {
 	UInt16 deviceId;
 	UInt8 revisionId;
 	UInt8 steppingId;
+	/*
+	 * PCI device id of the HDA function on the host (AMD GPUs commonly
+	 * report codec id 0x1002:0xaa01 from the HDA verb across generations,
+	 * while the actual generation is encoded only in the PCI device id of
+	 * the HDA function).  AppleGFXHDA dispatches the family by this value,
+	 * not by the codec id — see appleGfxHdaAmdCodecFamily() below.
+	 */
+	UInt16 hdaPciDeviceId;
 	CommandList *commands;
 	FunctionGroup *funcGroups;
 	int	numFuncGroups;
@@ -347,9 +355,14 @@ static inline bool isAtiHdmiCodec(Codec *codec) {
 
 /*
  * AppleGFXHDA does not treat all AMD HDMI codecs as one generic family.
- * The decompiled function-group/widget factory routes several codec IDs
- * through distinct ATI families, with aad8/aae0/aaf0/aaf8/ab2x/ab38/abf8
- * all landing on the Tahiti-era vendor path.
+ * The decompiled function-group factory routes the same codec id 0x1002:0xaa01
+ * to RS710 / RS730 / RS780 / Park / Broadway / Tahiti subclasses based on the
+ * **PCI device id of the HDA function on the AMD GPU**, not on the codec id
+ * read from the HDA verb.  Modern AMD GPUs (Tahiti, Polaris, Vega...) report
+ * the same 0xaa01 from the codec verb but expose distinct PCI device ids on
+ * the audio function (0xaaf0/0xaaf8/0xabf8/0xab2x/0xab38), and Apple maps
+ * those to the Tahiti family.  See createAppleHDAFunctionGroup at
+ * docs/audio_stack_decompiled/AppleGFXHDA_decompiled.c:48312-48400.
  */
 enum AppleGFXHDAAmdCodecFamily {
 	kAppleGFXHDAAmdFamilyUnknown = 0,
@@ -361,45 +374,93 @@ enum AppleGFXHDAAmdCodecFamily {
 	kAppleGFXHDAAmdFamilyTahiti
 };
 
-static inline AppleGFXHDAAmdCodecFamily appleGfxHdaAmdCodecFamily(UInt16 deviceId)
+/*
+ * Apple-1:1 family dispatch.  Argument is the PCI device id of the HDA
+ * function on the AMD GPU (Codec::hdaPciDeviceId, lower 16 bits of mDeviceId).
+ *
+ * Reproduces AppleGFXHDAFunctionGroupFactory::createAppleHDAFunctionGroup
+ * at docs/audio_stack_decompiled/AppleGFXHDA_decompiled.c:48356-48400, with
+ * the same range checks and bitmaps verbatim:
+ *
+ *   if (id < 0xaad8) {
+ *     if (id < 0xaa88) {
+ *       d = id - 0xaa40;
+ *       if (d < 0x29) {
+ *         if ((0x10300000000ULL >> (d & 0x3f)) & 1 == 0) -> Park
+ *         if ((0x1010000ULL      >> (d & 0x3f)) & 1)     -> Broadway
+ *         if (d == 0)                                    -> RS710
+ *         // else fall through to RS780/RS730 check
+ *       }
+ *       if (id == 0xaa30) -> RS780
+ *       if (id == 0xaa38) -> RS730
+ *     } else {
+ *       d = id - 0xaa88;
+ *       if (d < 0x39) {
+ *         if ((0x10101ULL        >> (d & 0x3f)) & 1)     -> Broadway
+ *         if (((0x10001000000ULL >> (d & 0x3f)) & 1) || d == 0x38)
+ *                                                        -> Tahiti
+ *       }
+ *     }
+ *   } else if (id < 0xaaf8) {
+ *     if (id == 0xaad8 || id == 0xaae0 || id == 0xaaf0)  -> Tahiti
+ *   } else {
+ *     d = id - 0xab20;
+ *     if ((d < 0x19 && ((0x1000101UL >> (d & 0x1f)) & 1)) ||
+ *          id == 0xaaf8 || id == 0xabf8)                 -> Tahiti
+ *   }
+ *   -> Unknown
+ */
+static inline AppleGFXHDAAmdCodecFamily appleGfxHdaAmdCodecFamily(UInt16 hdaPciDeviceId)
 {
-	switch (deviceId) {
-		case 0xaa30:
-			return kAppleGFXHDAAmdFamilyRS780;
-		case 0xaa38:
-			return kAppleGFXHDAAmdFamilyRS730;
-		case 0xaa40:
-			return kAppleGFXHDAAmdFamilyRS710;
-		case 0xaa00:
-		case 0xaa01:
-		case 0xaa08:
-		case 0xaa10:
-		case 0xaa18:
-		case 0xaa20:
-		case 0xaa28:
-		case 0xaa48:
-			return kAppleGFXHDAAmdFamilyPark;
-		case 0xaa88:
-		case 0xaa90:
-		case 0xaa98:
-			return kAppleGFXHDAAmdFamilyBroadway;
-		case 0xaad8:
-		case 0xaae0:
-		case 0xaaf0:
-		case 0xaaf8:
-		case 0xab20:
-		case 0xab28:
-		case 0xab38:
-		case 0xabf8:
-			return kAppleGFXHDAAmdFamilyTahiti;
-		default:
+	UInt32 id = hdaPciDeviceId;
+
+	if (id < 0xaad8U) {
+		if (id < 0xaa88U) {
+			UInt32 d = id - 0xaa40U;
+			if (d < 0x29U) {
+				if (((0x10300000000ULL >> (d & 0x3fU)) & 1U) == 0)
+					return kAppleGFXHDAAmdFamilyPark;
+				if (((0x1010000ULL >> (d & 0x3fU)) & 1U) != 0)
+					return kAppleGFXHDAAmdFamilyBroadway;
+				if (d == 0)
+					return kAppleGFXHDAAmdFamilyRS710;
+				/* fall through to RS780/RS730 check (matches Apple's
+				 * `goto LAB_00040f0d` for d != 0 in the carve-out). */
+			}
+			if (id == 0xaa30U)
+				return kAppleGFXHDAAmdFamilyRS780;
+			if (id == 0xaa38U)
+				return kAppleGFXHDAAmdFamilyRS730;
 			return kAppleGFXHDAAmdFamilyUnknown;
+		}
+		{
+			UInt32 d = id - 0xaa88U;
+			if (d < 0x39U) {
+				if (((0x10101ULL >> (d & 0x3fU)) & 1U) != 0)
+					return kAppleGFXHDAAmdFamilyBroadway;
+				if (((0x10001000000ULL >> (d & 0x3fU)) & 1U) != 0 || d == 0x38U)
+					return kAppleGFXHDAAmdFamilyTahiti;
+			}
+		}
+		return kAppleGFXHDAAmdFamilyUnknown;
 	}
+	if (id < 0xaaf8U) {
+		if (id == 0xaad8U || id == 0xaae0U || id == 0xaaf0U)
+			return kAppleGFXHDAAmdFamilyTahiti;
+		return kAppleGFXHDAAmdFamilyUnknown;
+	}
+	{
+		UInt32 d = id - 0xab20U;
+		if ((d < 0x19U && ((0x1000101UL >> (d & 0x1fU)) & 1U) != 0) ||
+		    id == 0xaaf8U || id == 0xabf8U)
+			return kAppleGFXHDAAmdFamilyTahiti;
+	}
+	return kAppleGFXHDAAmdFamilyUnknown;
 }
 
-static inline const char *appleGfxHdaAmdCodecFamilyName(UInt16 deviceId)
+static inline const char *appleGfxHdaAmdCodecFamilyName(UInt16 hdaPciDeviceId)
 {
-	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+	switch (appleGfxHdaAmdCodecFamily(hdaPciDeviceId)) {
 		case kAppleGFXHDAAmdFamilyRS710:
 			return "ATI_RS710";
 		case kAppleGFXHDAAmdFamilyRS730:
@@ -417,9 +478,9 @@ static inline const char *appleGfxHdaAmdCodecFamilyName(UInt16 deviceId)
 	}
 }
 
-static inline UInt32 appleGfxHdaAmdMemoryDescCoeffForCodec(UInt16 deviceId)
+static inline UInt32 appleGfxHdaAmdMemoryDescCoeffForCodec(UInt16 hdaPciDeviceId)
 {
-	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+	switch (appleGfxHdaAmdCodecFamily(hdaPciDeviceId)) {
 		case kAppleGFXHDAAmdFamilyPark:
 		case kAppleGFXHDAAmdFamilyTahiti:
 			return 0x3000;
@@ -428,9 +489,9 @@ static inline UInt32 appleGfxHdaAmdMemoryDescCoeffForCodec(UInt16 deviceId)
 	}
 }
 
-static inline bool appleGfxHdaAmdSupportsDisableSlots(UInt16 deviceId)
+static inline bool appleGfxHdaAmdSupportsDisableSlots(UInt16 hdaPciDeviceId)
 {
-	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+	switch (appleGfxHdaAmdCodecFamily(hdaPciDeviceId)) {
 		case kAppleGFXHDAAmdFamilyRS710:
 		case kAppleGFXHDAAmdFamilyRS730:
 		case kAppleGFXHDAAmdFamilyRS780:
@@ -441,9 +502,9 @@ static inline bool appleGfxHdaAmdSupportsDisableSlots(UInt16 deviceId)
 	}
 }
 
-static inline bool appleGfxHdaAmdUsesCachedELDPresence(UInt16 deviceId)
+static inline bool appleGfxHdaAmdUsesCachedELDPresence(UInt16 hdaPciDeviceId)
 {
-	switch (appleGfxHdaAmdCodecFamily(deviceId)) {
+	switch (appleGfxHdaAmdCodecFamily(hdaPciDeviceId)) {
 		case kAppleGFXHDAAmdFamilyRS710:
 		case kAppleGFXHDAAmdFamilyRS730:
 		case kAppleGFXHDAAmdFamilyRS780:
