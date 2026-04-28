@@ -604,6 +604,28 @@ bool VoodooHDADevice::initHardware(IOService *provider)
 	enableEventSources();
 
 	/*
+	 * Apple-1:1 lift from AppleGFXHDAController::setRequireMaxBusStall
+	 * (decompile:9402-9577).  Apple reads the kext's RequireMaxBusStall
+	 * personality and calls IOService::requireMaxBusStall(value) to bound
+	 * the time the PCIe scheduler may stall this device.  For the AMD
+	 * IOClass = AppleGFXHDAEGController personality (pci1002,aaf0/aaf8/
+	 * abf8/ab20/ab28/ab38/aae0) the value is 15000 ns.  Without this the
+	 * audio DMA can be starved during heavy bus contention (other PCIe
+	 * devices DMA, GPU work, etc.), producing intermittent crackling on
+	 * HDMI audio that does not reproduce on lightly loaded systems —
+	 * exactly the "first 0.5 s clean, then wheeze" pattern reported on
+	 * RX 570.  We mirror this for AMD vendors; for non-AMD codecs the
+	 * setting is harmless (kernel scheduler honors only the most
+	 * restrictive bound across all consumers).
+	 */
+	if (mPciNub) {
+		const UInt32 maxBusStallNs = 15000;
+		mPciNub->requireMaxBusStall(maxBusStallNs);
+		IOLog("VoodooHDA DBG: requireMaxBusStall(%u ns)\n",
+		      (unsigned)maxBusStallNs);
+	}
+
+	/*
 	 * HDMI/DP PCM channels are attached during scanCodecs() -> pcmAttach() ->
 	 * channelInit().  The Apple-like graphics-audio DMA path must therefore
 	 * exist before codec parsing starts, otherwise digital channels fall back
