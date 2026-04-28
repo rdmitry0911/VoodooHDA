@@ -3089,17 +3089,25 @@ void VoodooHDADevice::streamSetup(Channel *channel)
 	}
 
 	format |= (totalchn - 1);
+
+	/* HDA spec 3.7.1: SDFMT bit 15 = 0 PCM, 1 Non-PCM.  Mirrors
+	 * IOGFXHDAStream::getDescriptorFormat at
+	 * docs/audio_stack_decompiled/AppleGFXHDA_decompiled.c:61716-61747
+	 * (`uVar4 = uVar2 | 0x8000; if (iVar3 == 0) uVar4 = uVar2;`). */
+	if (channel->format & AFMT_AC3)
+		format |= 0x8000;
+
 	//Slice - from BSD
 	/* Set channel mapping for known speaker setups. */
-	if (assoc->pinset == 0x0007 || assoc->pinset == 0x0013) // Standard 5.1 
+	if (assoc->pinset == 0x0007 || assoc->pinset == 0x0013) // Standard 5.1
 		map = 0;
-	 else if (assoc->pinset == 0x0017) // Standard 7.1 
+	 else if (assoc->pinset == 0x0017) // Standard 7.1
 		map = 1;
-	
+
 	digFormat = HDA_CMD_SET_DIGITAL_CONV_FMT1_DIGEN | HDA_CMD_SET_DIGITAL_CONV_FMT1_COPY;
 	if (channel->format & AFMT_AC3)
 		digFormat |= HDA_CMD_SET_DIGITAL_CONV_FMT1_NAUDIO;
-	
+
 	writeData16(channel->off + HDAC_SDFMT, format);
     
 	/* AppleGFXHDA never uses stripe mode for HDMI audio.  Stripe causes
