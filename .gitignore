@@ -30,3 +30,6 @@
 *.exe
 *.out
 *.app
+
+# Build output (kext + intermediates) — produced by ./build.sh / xcodebuild
+/build/
