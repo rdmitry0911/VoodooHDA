@@ -321,15 +321,23 @@ void VoodooHDADevice::powerup(FunctionGroup *funcGroup)
 	for (int i = funcGroup->startNode; i < funcGroup->endNode; i++)
 		sendCommand(HDA_CMD_SET_POWER_STATE(cad, i, HDA_CMD_POWER_STATE_D0), cad);
 
-	/* AppleGFXHDAFunctionGroup::audioFunctionGroupStartupDelay returns 150ms
-	 * (decompile:33030, returns 0x96).  This is the post-D0 settling time the
-	 * AFG needs before its widgets respond reliably; subclasses can override
-	 * but the ATI Tahiti / Park / RS780 family all inherit the 150ms default.
-	 * The previous 1000μs (1ms) busy-wait is well below what AMD HDA cores
-	 * need to settle on a cold power-up — first verbs after D0 can return
-	 * stale state, which manifests as missing/wrong pin caps on early enum.
-	 * Use IOSleep so we yield instead of burning a CPU for the full 150ms. */
-	IOSleep(150);
+	/* Post-D0 settling time depends on codec family.
+	 *
+	 * AppleGFXHDAFunctionGroup::audioFunctionGroupStartupDelay
+	 * (decompile:33030) returns 0x96 = 150ms by default — used for analog
+	 * codecs and unknown vendors.
+	 *
+	 * AppleGFXHDAFunctionGroupATI_RS780::audioFunctionGroupStartupDelay
+	 * (decompile:50963) overrides to 0 — and *every* ATI/AMD HDMI subclass
+	 * (Park / Broadway / Tahiti / RS710 / RS730) inherits from RS780, so
+	 * Apple does not add a post-D0 wait for AMD GPU HDA codecs at all.
+	 *
+	 * Use IOSleep on the analog path so we yield instead of busy-waiting,
+	 * but keep zero delay on AMD HDMI to match the reference. */
+	if (isAtiHdmiCodec(funcGroup->codec))
+		/* RS780-family inherited override = 0ms; nothing to do. */;
+	else
+		IOSleep(150);
 }
 
 void VoodooHDADevice::applyAppleALCExtraVerbs(FunctionGroup *funcGroup)
