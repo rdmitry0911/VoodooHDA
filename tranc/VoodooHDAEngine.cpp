@@ -998,12 +998,62 @@ IOReturn VoodooHDAEngine::performAudioEngineStop()
 	return kIOReturnSuccess;
 }
 	
+/*
+ * Look up an Apple-style integer property by walking up the IOService
+ * plane from this engine.  Mirrors AppleGFXHDAEngine::recalculateEngines
+ * SampleOffset (decompile:0x1dd00-0x1ddfa) which calls
+ * `IORegistryEntry::getProperty(name, IOService plane,
+ * kIORegistryIterateRecursively | kIORegistryIterateParents)`.
+ * Returns true and stores the value if a parent in the IOService plane
+ * publishes the key; false if no parent has it (caller falls back to
+ * its hardcoded default).
+ *
+ * Apple publishes these from AGDC / AppleGraphicsDeviceControl on the
+ * GPU's IORegistryEntry; on a default install they may be absent, in
+ * which case we keep our VoodooHDA-tuned defaults.
+ */
+bool VoodooHDAEngine::lookupAncestorPropertyU32(const char *name, UInt32 *out) const
+{
+	if (!name || !out)
+		return false;
+
+	OSObject *prop = const_cast<VoodooHDAEngine *>(this)->copyProperty(
+	    name, gIOServicePlane,
+	    kIORegistryIterateRecursively | kIORegistryIterateParents);
+	if (!prop)
+		return false;
+
+	bool ok = false;
+	if (OSNumber *num = OSDynamicCast(OSNumber, prop)) {
+		*out = num->unsigned32BitValue();
+		ok = true;
+	} else if (OSData *data = OSDynamicCast(OSData, prop)) {
+		if (data->getLength() >= sizeof(UInt32)) {
+			*out = *reinterpret_cast<const UInt32 *>(data->getBytesNoCopy());
+			ok = true;
+		}
+	}
+	prop->release();
+	return ok;
+}
+
 /* Mirror of Apple's AppleGFXHDAEngine::recalculateEnginesSampleOffset/Latency().
  * Called from initHardware() with a default rate, then again on every
  * performFormatChange() so the offsets scale with the actual sample rate.
  *
  * Formula: offset = roundup(rate * safetyCoeff_μs / 1_000_000) + base
- * Input offset is always analog-style (no large FIFO on the capture side). */
+ * Input offset is always analog-style (no large FIFO on the capture side).
+ *
+ * Apple at decompile 0x16fe6 (AppleGFXHDADriver::getOutputSafetyOffset)
+ * computes `iVar1 = (rate * driver+0x1b8 + 999999) / 1000000; return iVar1
+ * + driver+0x1cc;` where driver+0x1b8/+0x1cc are loaded at engine init
+ * (decompile:0x1dd00-0x1ddfa) by walking the IOService plane and reading
+ * `AdditionalOutputSafetyOffset` / `SampleOffsetPad` /
+ * `SystemSpecificSampleOffsetPad` / `OutputSampleLatency` properties from
+ * a parent (AGDC on supported macs).  We mirror that lookup here: read
+ * the same keys via copyProperty walk and *add* what we find on top of
+ * our hardcoded baseline (HDMI_SAFETY_US/HDMI_FIFO_BASE/HDMI_LATENCY_US).
+ * If no parent publishes them, fall back to the baseline. */
 void VoodooHDAEngine::recalculateSampleOffsets(UInt32 sampleRate)
 {
 	bool isDigital = (mChannel->funcGroup->audio.assocs[mChannel->assocNum].digital != 0);
@@ -1016,15 +1066,39 @@ void VoodooHDAEngine::recalculateSampleOffsets(UInt32 sampleRate)
 	UInt32 latency   = (sampleRate * latencyUs + 999999) / 1000000;
 	UInt32 inOffset  = (sampleRate * ANALOG_SAFETY_US + 999999) / 1000000;
 
+	/* Apple-style property overrides.  All four are *additive on top of
+	 * the computed safety offset*; OutputSampleLatency replaces our
+	 * computed latency if explicitly published. */
+	UInt32 addOutPad = 0, addInPad = 0, sampleOffsetPad = 0, sysSpecPad = 0;
+	UInt32 outputLatencyOverride = 0;
+
+	bool gotAddOut = lookupAncestorPropertyU32("AdditionalOutputSafetyOffset", &addOutPad);
+	bool gotAddIn  = lookupAncestorPropertyU32("AdditionalInputSafetyOffset",  &addInPad);
+	bool gotPad    = lookupAncestorPropertyU32("SampleOffsetPad",              &sampleOffsetPad);
+	bool gotSys    = lookupAncestorPropertyU32("SystemSpecificSampleOffsetPad",&sysSpecPad);
+	bool gotLatOv  = lookupAncestorPropertyU32("OutputSampleLatency",          &outputLatencyOverride);
+
+	if (gotAddOut)  outOffset += addOutPad;
+	if (gotPad)     outOffset += sampleOffsetPad;
+	if (gotSys)     outOffset += sysSpecPad;
+	if (gotAddIn)   inOffset  += addInPad;
+	if (gotLatOv)   latency    = outputLatencyOverride;
+
 	setSampleOffset(outOffset);        // legacy compat (field+0x104)
 	setOutputSampleOffset(outOffset);  // vtable+0xb78 — output IOAudioStream
 	setInputSampleOffset(inOffset);
 	setSampleLatency(latency);
 	setOutputSampleLatency(latency);
 
-	logMsg("recalculateSampleOffsets: rate=%u %s outOffset=%u inOffset=%u latency=%u\n",
+	logMsg("recalculateSampleOffsets: rate=%u %s outOffset=%u inOffset=%u latency=%u "
+	       "(props addOut=%u/%d addIn=%u/%d pad=%u/%d sys=%u/%d latOv=%u/%d)\n",
 	       (unsigned)sampleRate, isDigital ? "HDMI/DP" : "Analog",
-	       (unsigned)outOffset, (unsigned)inOffset, (unsigned)latency);
+	       (unsigned)outOffset, (unsigned)inOffset, (unsigned)latency,
+	       (unsigned)addOutPad, gotAddOut,
+	       (unsigned)addInPad, gotAddIn,
+	       (unsigned)sampleOffsetPad, gotPad,
+	       (unsigned)sysSpecPad, gotSys,
+	       (unsigned)outputLatencyOverride, gotLatOv);
 }
 
 UInt32 VoodooHDAEngine::getCurrentSampleFrame()

@@ -87,6 +87,7 @@ public:
 			UInt32 numSampleFrames, const IOAudioStreamFormat *streamFormat, IOAudioStream *audioStream) override;
 
 	void recalculateSampleOffsets(UInt32 sampleRate);
+	bool lookupAncestorPropertyU32(const char *name, UInt32 *out) const;
 	bool usesAppleGfxClipPath() const;
 	bool diagnosticsEnabled() const;
 	UInt16 diagnosticFlags() const;
