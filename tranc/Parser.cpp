@@ -4893,12 +4893,24 @@ void VoodooHDADevice::switchInit(FunctionGroup *funcGroup)
 		 * Register unsolicited response for ALL pins with the capability,
 		 * including HDMI/DP pins (FreeBSD hdaa_sense_init pattern).
 		 * HDMI/DP pins need unsolicited events for ELD change detection.
-		 */
+		 *
+		 * Mirror Apple's tag-per-pin scheme (decompile:0x19bea
+		 * AppleGFXHDADriver::handleUnsolicitedResponsePinSenseCacheSupport
+		 * recognizes tags {1..7, 9, 0x33}).  We use the pin NID as the
+		 * tag so that tag→pin dispatch in handleUnsolicited is O(1),
+		 * matching Apple's per-tag handler routing instead of our
+		 * previous O(N) re-scan-all-pins approach with tag=0.  NID is
+		 * always 1..127; we mask to 6 bits (HDA_CMD_SET_UNSOLICITED_
+		 * RESPONSE_TAG_MASK = 0x3f).  NID 0 is the function group
+		 * itself (never a pin); using NID directly cannot collide
+		 * with the legacy HDAC_UNSOLTAG_EVENT_HP=0 code path. */
 		if (HDA_PARAM_AUDIO_WIDGET_CAP_UNSOL_CAP(widget->params.widgetCap)) {
+			UInt8 tag = static_cast<UInt8>(widget->nid & HDA_CMD_SET_UNSOLICITED_RESPONSE_TAG_MASK);
 			sendCommand(HDA_CMD_SET_UNSOLICITED_RESPONSE(cad, j,
-					HDA_CMD_SET_UNSOLICITED_RESPONSE_ENABLE | HDAC_UNSOLTAG_EVENT_HP), cad);
-			logMsg("switchInit registered unsol response for nid=%d (HDMI=%d DP=%d)\n",
-			       j, HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) ? 1 : 0,
+					HDA_CMD_SET_UNSOLICITED_RESPONSE_ENABLE | tag), cad);
+			logMsg("switchInit registered unsol response for nid=%d tag=0x%02x (HDMI=%d DP=%d)\n",
+			       j, tag,
+			       HDA_PARAM_PIN_CAP_HDMI(widget->pin.cap) ? 1 : 0,
 			       HDA_PARAM_PIN_CAP_DP(widget->pin.cap) ? 1 : 0);
 		}
 

@@ -2303,53 +2303,102 @@ void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag, UInt32 resp)
 	if (!funcGroup)
 		return;
 
-	switch (tag) {
-	case HDAC_UNSOLTAG_EVENT_HP:
-	{
-		/*
-		 * Determine flags based on pin type (FreeBSD pattern).
-		 * HDMI/DP: flags = resp & 0x03 (presence + ELD change)
-		 * Analog:  flags = 0x01 (presence only)
-		 */
-		int flags = 0x01; /* default: presence only */
+	/*
+	 * Apple-1:1 tag dispatch (decompile:0x19bea
+	 * AppleGFXHDADriver::handleUnsolicitedResponsePinSenseCacheSupport).
+	 * Apple uses tags {1..7, 9, 0x33} with O(1) dispatch by tag.  We
+	 * encode the pin NID as the tag at SET_UNSOLICITED_RESPONSE time
+	 * (Parser.cpp::switchInit), so tag != 0 directly identifies the
+	 * source pin.  Tag == 0 is the legacy code path (no pin tagged or
+	 * pre-init bring-up event) and falls back to re-scan-all-pins.
+	 *
+	 * resp encoding (HDA spec 4.3.3.10):
+	 *   bit 0 = presence change
+	 *   bit 1 = ELD valid change (HDMI/DP only)
+	 */
+	const UInt32 flags = resp & 0x03;
 
-		/* Check if any HDMI/DP pin uses this tag — if so, extract both flags */
+	if (tag != HDAC_UNSOLTAG_EVENT_HP) {
+		/* Tagged event — find the source pin by NID and update only it. */
+		Widget *src = NULL;
 		for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
 			Widget *w = widgetGet(funcGroup, j);
-			if (!w || w->enable == 0 || w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+			if (!w || w->enable == 0 ||
+			    w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+				continue;
+			if ((w->nid & HDA_CMD_SET_UNSOLICITED_RESPONSE_TAG_MASK) == tag) {
+				src = w;
+				break;
+			}
+		}
+		if (!src) {
+			IOLog("VoodooHDA DBG: unsol tag=0x%x has no matching pin (resp=0x%08x), "
+			      "falling back to scan-all\n", (unsigned)tag, (unsigned)resp);
+			switchHandler(funcGroup, false);
+			updateHDMIEnginePresence();
+			return;
+		}
+
+		IOLog("VoodooHDA DBG: unsol tag=0x%x pin=nid%d resp=0x%08x flags=0x%x\n",
+		      (unsigned)tag, src->nid, (unsigned)resp, (unsigned)flags);
+
+		bool isHDMIorDP = HDA_PARAM_PIN_CAP_DP(src->pin.cap) ||
+		                  HDA_PARAM_PIN_CAP_HDMI(src->pin.cap);
+
+		if (isHDMIorDP) {
+			/* For HDMI/DP, flags carry both presence (bit0) and ELD-
+			 * valid (bit1).  On either, we re-read sense + ELD on
+			 * THIS pin only — O(1) instead of the legacy scan-all. */
+			UInt32 sense = sendCommand(HDA_CMD_GET_PIN_SENSE(funcGroup->codec->cad, src->nid),
+			                            funcGroup->codec->cad);
+			src->sense = HDA_CMD_GET_PIN_SENSE_PRESENCE_DETECT(sense);
+			if (funcGroup->audio.quirks & HDA_QUIRK_SENSEINV)
+				src->sense ^= 1;
+			hdaa_eld_handler(src);
+			updateHDMIEnginePresence();
+		} else {
+			/* Analog jack: presence change → HP redirect path. */
+			if (flags & 0x01)
+				switchHandler(funcGroup, false);
+		}
+		return;
+	}
+
+	/* Tag == 0 fallback (legacy path / pre-init events / external
+	 * codecs that didn't get our per-pin tag programming). */
+	{
+		int legacyFlags = 0x01; /* default: presence only */
+		/* If any HDMI/DP pin exists in this group, extract both flags */
+		for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
+			Widget *w = widgetGet(funcGroup, j);
+			if (!w || w->enable == 0 ||
+			    w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
 				continue;
 			if (HDA_PARAM_PIN_CAP_DP(w->pin.cap) || HDA_PARAM_PIN_CAP_HDMI(w->pin.cap)) {
-				flags = resp & 0x03;
+				legacyFlags = resp & 0x03;
 				break;
 			}
 		}
 
-		IOLog("VoodooHDA DBG: unsol tag=0x%x resp=0x%08x flags=0x%x\n",
-			  (unsigned)tag, (unsigned)resp, flags);
+		IOLog("VoodooHDA DBG: unsol tag=0 resp=0x%08x flags=0x%x (scan-all)\n",
+		      (unsigned)resp, (unsigned)legacyFlags);
 
-		/* Presence change — standard jack switching */
-		if (flags & 0x01) {
+		if (legacyFlags & 0x01) {
 			switchHandler(funcGroup, false);
 			updateHDMIEnginePresence();
 		}
 
-		/* ELD change — re-read ELD for HDMI/DP pins */
-		if (flags & 0x02) {
+		if (legacyFlags & 0x02) {
 			for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
 				Widget *w = widgetGet(funcGroup, j);
-				if (!w || w->enable == 0 || w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
+				if (!w || w->enable == 0 ||
+				    w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
 					continue;
 				if (!HDA_PARAM_PIN_CAP_DP(w->pin.cap) && !HDA_PARAM_PIN_CAP_HDMI(w->pin.cap))
 					continue;
-				IOLog("VoodooHDA DBG: ELD change event, re-reading ELD for nid=%d\n", w->nid);
 				hdaa_eld_handler(w);
 			}
 		}
-		break;
-	}
-	default:
-		errorMsg("Unknown unsol tag: 0x%08lx!\n", (long unsigned int)tag);
-		break;
 	}
 }
 
