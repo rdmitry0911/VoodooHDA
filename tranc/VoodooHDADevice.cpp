@@ -3104,9 +3104,17 @@ void VoodooHDADevice::streamSetup(Channel *channel)
 	 else if (assoc->pinset == 0x0017) // Standard 7.1
 		map = 1;
 
-	digFormat = HDA_CMD_SET_DIGITAL_CONV_FMT1_DIGEN | HDA_CMD_SET_DIGITAL_CONV_FMT1_COPY;
+	/* Mirror AppleGFXHDAWidget::setIEC60958
+	 * (decompile:36262-36320).  PCM: DIGEN | COPY (= 0x11), encoding
+	 * "L-PCM, copyrighted-OK".  AC3 (non-PCM): DIGEN | NAUDIO (= 0x21),
+	 * NOT setting COPY because IEC 61937 compressed payloads carry their
+	 * own copy-protection in the encoded stream and Apple deliberately
+	 * leaves the converter-level copy bit clear. */
+	digFormat = HDA_CMD_SET_DIGITAL_CONV_FMT1_DIGEN;
 	if (channel->format & AFMT_AC3)
 		digFormat |= HDA_CMD_SET_DIGITAL_CONV_FMT1_NAUDIO;
+	else
+		digFormat |= HDA_CMD_SET_DIGITAL_CONV_FMT1_COPY;
 
 	writeData16(channel->off + HDAC_SDFMT, format);
     
