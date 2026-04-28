@@ -93,6 +93,9 @@ public:
 	UInt16 diagnosticFlags() const;
 	bool diagnosticUsesMixTone() const;
 	bool diagnosticUsesDirectTone() const;
+	bool diagnosticUsesChord() const;
+	void fillDiagnosticChordBuffer(void *sampleBuf, UInt32 firstSampleFrame, UInt32 numSampleFrames,
+	                               const IOAudioStreamFormat *streamFormat);
 	bool diagnosticSkipsErase() const;
 	bool diagnosticBypassesProcessing() const;
 	bool diagnosticFreezesBuffer() const;

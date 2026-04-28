@@ -3915,6 +3915,34 @@ IOReturn VoodooHDAEngine::clipOutputSamples(const void *mixBuf, void *sampleBuf,
 	if (appleDigitalClipPath && mDigitalStream)
 		mDigitalStream->noteClippedPosition(firstSampleFrame + numSampleFrames);
 
+	/* Diag-mode chord injection: replace the just-clipped DMA bytes with a
+	 * sum of pure sines at 1/2/4/8/16 kHz. Runs AFTER the regular clip path
+	 * (so format/endianness/bit-depth match what the engine actually emits)
+	 * and BEFORE the tap (so the tap captures the synthesized signal that
+	 * the codec is about to read). */
+	if (diagnosticUsesChord())
+		fillDiagnosticChordBuffer(sampleBuf, firstSampleFrame, numSampleFrames, streamFormat);
+
+	/* Diag-mode PCM tap: copy what we just wrote into the DMA buffer to the
+	 * shared ring. Only one engine taps at a time (mDiagTapChannel); cost
+	 * when disabled is one volatile read + branch. Captures the bytes that
+	 * the HDA controller is about to read via DMA, so a clean dump points
+	 * to a HW-side problem and a glitchy dump points to a CPU-side problem.
+	 */
+	if (mDevice && mDevice->mDiagTapChannel >= 0 && mChannel && mDevice->mChannels) {
+		SInt32 chIdx = static_cast<SInt32>(mChannel - mDevice->mChannels);
+		if (chIdx >= 0 && chIdx < mDevice->mNumChannels && chIdx == mDevice->mDiagTapChannel) {
+			UInt32 frameBytes = (streamFormat->fBitWidth / 8) * streamFormat->fNumChannels;
+			UInt32 byteOffset = firstSampleFrame * frameBytes;
+			mDevice->diagTapWriteSamples(static_cast<UInt32>(chIdx),
+			                              static_cast<const UInt8 *>(sampleBuf) + byteOffset,
+			                              numSampleFrames, frameBytes,
+			                              mChannel->speed,
+			                              streamFormat->fNumChannels,
+			                              streamFormat->fBitWidth);
+		}
+	}
+
 	return kIOReturnSuccess;
 }
 

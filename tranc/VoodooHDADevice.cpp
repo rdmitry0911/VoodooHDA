@@ -62,6 +62,19 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	mGFXController = NULL;
 	mNumHDMIEngines = 0;
 	bzero(mHDMIEngines, sizeof(mHDMIEngines));
+
+	/* Diag-mode state */
+	mDiagLock = NULL;
+	mDiagPCMRingDesc = NULL;
+	mDiagPCMRingPtr = NULL;
+	mDiagSnapshotDesc = NULL;
+	mDiagSnapshotPtr = NULL;
+	mDiagELDDesc = NULL;
+	mDiagELDPtr = NULL;
+	mDiagTapChannel = -1;
+	mDiagForceActiveMask = 0;
+	bzero(mDiagInjectedELD, sizeof(mDiagInjectedELD));
+	bzero(mDiagInjectedELDLen, sizeof(mDiagInjectedELDLen));
 	if (!super::init(dict)) {
 		return false;
 	}
@@ -159,6 +172,7 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	mAllowMSI = (osBool ? osBool->isTrue() : true);
 
 	mLock = IOLockAlloc();
+	mDiagLock = IOLockAlloc();
 
 	mUnsolqState = HDAC_UNSOLQ_READY;
 
@@ -804,6 +818,9 @@ void VoodooHDADevice::free()
 
 	FREE(mPrefPanelMemoryBuf);
 	FREE_LOCK(mPrefPanelMemoryBufLock);
+
+	freeDiagBuffers();
+	FREE_LOCK(mDiagLock);
 
 	FREE_LOCK(mLock);
 
@@ -1529,6 +1546,39 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 #endif
 	}
 
+	if ((action & 0xFF) == kVoodooHDAActionDiagPCMTap) {
+		UInt8 ch = (action >> 8) & 0xFF;
+		UInt8 enable = (action >> 16) & 0xFF;
+		*outSize = 0; *outData = NULL;
+		return device->diagSetPCMTap(ch, enable != 0);
+	}
+	if ((action & 0xFF) == kVoodooHDAActionDiagSnapshot) {
+		UInt8 ch = (action >> 8) & 0xFF;
+		*outSize = 0; *outData = NULL;
+		return device->diagCollectSnapshot(ch);
+	}
+	if ((action & 0xFF) == kVoodooHDAActionDiagForceActive) {
+		UInt8 ch = (action >> 8) & 0xFF;
+		UInt8 enable = (action >> 16) & 0xFF;
+		*outSize = 0; *outData = NULL;
+		return device->diagSetForceActive(ch, enable != 0);
+	}
+	if ((action & 0xFF) == kVoodooHDAActionDiagSetELD) {
+		UInt8 ch = (action >> 8) & 0xFF;
+		UInt16 len = static_cast<UInt16>(((action >> 16) & 0xFF) | (((action >> 24) & 0xFF) << 8));
+		*outSize = 0; *outData = NULL;
+		return device->diagInstallInjectedELD(ch, len);
+	}
+	if ((action & 0xFF) == kVoodooHDAActionDiagPCMRingReset) {
+		*outSize = 0; *outData = NULL;
+		return device->diagResetPCMRing();
+	}
+	if ((action & 0xFF) == kVoodooHDAActionDiagClearOverride) {
+		UInt8 ch = (action >> 8) & 0xFF;
+		*outSize = 0; *outData = NULL;
+		return device->diagClearOverride(ch);
+	}
+
 	//Команда от моей версии getDump для обновления данных об усилении
 	if((action & 0xFF)  == kVoodooHDAActionGetMixers) {
 
@@ -2227,6 +2277,18 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 		    appleGfxHdaAmdUsesCachedELDPresence(codec->hdaPciDeviceId) && eldValid)
 			hasPresence = true;
 		presence[i] = hasPresence;
+
+		/* Diag-mode override: force-active makes the engine appear connected
+		 * regardless of pin sense. The bit corresponds to the channel index. */
+		if (slot->channel && mChannels) {
+			SInt32 chIdx = static_cast<SInt32>(slot->channel - mChannels);
+			if (chIdx >= 0 && chIdx < kVoodooHDADiagMaxOverrideChannels &&
+			    (mDiagForceActiveMask & (1U << chIdx))) {
+				if (!presence[i])
+					presence[i] = true;
+			}
+		}
+
 		if (presence[i]) {
 			presenceCount++;
 			lastPresenceIdx = i;
@@ -2240,6 +2302,15 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 
 		bool hasPresence = presence[i];
 
+		bool forceActive = false;
+		SInt32 chIdx = -1;
+		if (slot->channel && mChannels) {
+			chIdx = static_cast<SInt32>(slot->channel - mChannels);
+			if (chIdx >= 0 && chIdx < kVoodooHDADiagMaxOverrideChannels &&
+			    (mDiagForceActiveMask & (1U << chIdx)))
+				forceActive = true;
+		}
+
 		if (hasPresence && !slot->activated) {
 			IOLog("VoodooHDA DBG: HDMI hot-plug: activating engine for pin=%d\n", slot->pinNid);
 			IOReturn ret = activateAudioEngine(slot->engine);
@@ -2248,15 +2319,24 @@ void VoodooHDADevice::updateHDMIEnginePresence()
 				slot->activated = true;
 		}
 
-		if (hasPresence && mFBNotifier)
+		/* Headless mode: inject our blob ourselves; otherwise, let the FB
+		 * notifier feed an EDID-derived ELD into the codec widget. */
+		if (hasPresence && forceActive && chIdx >= 0 &&
+		    chIdx < kVoodooHDADiagMaxOverrideChannels &&
+		    mDiagInjectedELDLen[chIdx] > 0) {
+			injectInjectedELDForSlot(i);
+		} else if (hasPresence && mFBNotifier) {
 			mFBNotifier->injectELDIntoPinIfReady(slot->cad, slot->pinNid);
+		}
 
 		/* When cable is removed, tell the GPU to stop the audio pipe so it
 		 * can power-gate the display engine and reduce power consumption.
 		 * ATI HDMI codecs always report presence=0 (bit 31) even when a display
 		 * is connected — they set ELD_VALID (bit 1) instead.  Only disable the
-		 * audio pipe for ATI when ELD_VALID is also 0, meaning truly disconnected. */
-		if (!hasPresence && mFBNotifier) {
+		 * audio pipe for ATI when ELD_VALID is also 0, meaning truly disconnected.
+		 * In headless diag mode, never disable the pipe — the engine must keep
+		 * running to feed the PCM tap. */
+		if (!hasPresence && !forceActive && mFBNotifier) {
 			bool disablePipe = true;
 			Codec *codec = mCodecs[slot->cad];
 			if (codec && isAtiHdmiCodec(codec)) {
@@ -3834,6 +3914,468 @@ void VoodooHDADevice::dumpExtMsg(const char *format, ...)
 	
 	if (lockExists)
 		unlockExtMsgBuffer();
-	
+
 	va_end(args);
+}
+
+/* ====================================================================
+ * Diag-mode (HDMI crackle root-cause) implementation
+ * ==================================================================== */
+
+bool VoodooHDADevice::allocateDiagBuffers()
+{
+	if (!mDiagLock) {
+		errorMsg("diag: lock not initialized\n");
+		return false;
+	}
+
+	IOLockLock(mDiagLock);
+
+	if (!mDiagPCMRingDesc) {
+		mDiagPCMRingDesc = IOBufferMemoryDescriptor::inTaskWithOptions(
+			kernel_task,
+			kIOMemoryKernelUserShared | kIODirectionInOut,
+			kVoodooHDADiagPCMRingTotalSize,
+			page_size);
+		if (!mDiagPCMRingDesc || mDiagPCMRingDesc->prepare() != kIOReturnSuccess) {
+			errorMsg("diag: PCM ring allocation failed\n");
+			RELEASE(mDiagPCMRingDesc);
+			IOLockUnlock(mDiagLock);
+			return false;
+		}
+		mDiagPCMRingPtr = mDiagPCMRingDesc->getBytesNoCopy();
+		bzero(mDiagPCMRingPtr, kVoodooHDADiagPCMRingTotalSize);
+
+		VHDAPCMRingHeader *hdr = (VHDAPCMRingHeader *) mDiagPCMRingPtr;
+		hdr->magic = kVoodooHDADiagPCMRingMagic;
+		hdr->version = 1;
+		hdr->ring_offset = kVoodooHDADiagPCMRingHeaderSize;
+		hdr->ring_size = kVoodooHDADiagPCMRingDataSize;
+		hdr->head = 0;
+		hdr->tail = 0;
+		hdr->dropped_bytes = 0;
+		hdr->enabled = 0;
+		hdr->channel_index = 0xFFFFFFFFU;
+	}
+
+	if (!mDiagSnapshotDesc) {
+		mDiagSnapshotDesc = IOBufferMemoryDescriptor::inTaskWithOptions(
+			kernel_task,
+			kIOMemoryKernelUserShared | kIODirectionInOut,
+			kVoodooHDADiagSnapshotSize,
+			page_size);
+		if (!mDiagSnapshotDesc || mDiagSnapshotDesc->prepare() != kIOReturnSuccess) {
+			errorMsg("diag: snapshot allocation failed\n");
+			RELEASE(mDiagSnapshotDesc);
+			IOLockUnlock(mDiagLock);
+			return false;
+		}
+		mDiagSnapshotPtr = mDiagSnapshotDesc->getBytesNoCopy();
+		bzero(mDiagSnapshotPtr, kVoodooHDADiagSnapshotSize);
+		VHDADiagSnapshot *snap = (VHDADiagSnapshot *) mDiagSnapshotPtr;
+		snap->magic = kVoodooHDADiagSnapshotMagic;
+		snap->version = 1;
+		snap->size = sizeof(VHDADiagSnapshot);
+	}
+
+	if (!mDiagELDDesc) {
+		mDiagELDDesc = IOBufferMemoryDescriptor::inTaskWithOptions(
+			kernel_task,
+			kIOMemoryKernelUserShared | kIODirectionInOut,
+			kVoodooHDADiagELDBufferSize,
+			page_size);
+		if (!mDiagELDDesc || mDiagELDDesc->prepare() != kIOReturnSuccess) {
+			errorMsg("diag: ELD scratch allocation failed\n");
+			RELEASE(mDiagELDDesc);
+			IOLockUnlock(mDiagLock);
+			return false;
+		}
+		mDiagELDPtr = mDiagELDDesc->getBytesNoCopy();
+		bzero(mDiagELDPtr, kVoodooHDADiagELDBufferSize);
+	}
+
+	IOLockUnlock(mDiagLock);
+	return true;
+}
+
+void VoodooHDADevice::freeDiagBuffers()
+{
+	if (!mDiagLock)
+		return;
+	IOLockLock(mDiagLock);
+	mDiagTapChannel = -1;
+	if (mDiagPCMRingDesc) {
+		mDiagPCMRingDesc->complete();
+		RELEASE(mDiagPCMRingDesc);
+	}
+	mDiagPCMRingPtr = NULL;
+	if (mDiagSnapshotDesc) {
+		mDiagSnapshotDesc->complete();
+		RELEASE(mDiagSnapshotDesc);
+	}
+	mDiagSnapshotPtr = NULL;
+	if (mDiagELDDesc) {
+		mDiagELDDesc->complete();
+		RELEASE(mDiagELDDesc);
+	}
+	mDiagELDPtr = NULL;
+	IOLockUnlock(mDiagLock);
+}
+
+IOReturn VoodooHDADevice::diagSetPCMTap(UInt8 channel, bool enable)
+{
+	if (channel >= mNumChannels)
+		return kIOReturnBadArgument;
+	if (!mDiagPCMRingPtr) {
+		if (!allocateDiagBuffers())
+			return kIOReturnNoMemory;
+	}
+
+	VHDAPCMRingHeader *hdr = (VHDAPCMRingHeader *) mDiagPCMRingPtr;
+	IOLockLock(mDiagLock);
+	if (enable) {
+		/* Reset ring on enable so capture starts clean */
+		hdr->head = 0;
+		hdr->tail = 0;
+		hdr->dropped_bytes = 0;
+		hdr->channel_index = channel;
+		hdr->enabled = 1;
+		mDiagTapChannel = (SInt32) channel;
+	} else {
+		mDiagTapChannel = -1;
+		hdr->enabled = 0;
+	}
+	IOLockUnlock(mDiagLock);
+	logMsg("diag: PCM tap %s on channel %u\n", enable ? "ENABLED" : "disabled", channel);
+	return kIOReturnSuccess;
+}
+
+IOReturn VoodooHDADevice::diagSetForceActive(UInt8 channel, bool enable)
+{
+	if (channel >= kVoodooHDADiagMaxOverrideChannels)
+		return kIOReturnBadArgument;
+	IOLockLock(mDiagLock);
+	if (enable)
+		mDiagForceActiveMask |= (1U << channel);
+	else
+		mDiagForceActiveMask &= ~(1U << channel);
+	IOLockUnlock(mDiagLock);
+	logMsg("diag: force-active=%u on channel %u (mask=0x%x)\n",
+	       enable, channel, mDiagForceActiveMask);
+	/* Re-evaluate presence so the change takes effect immediately */
+	updateHDMIEnginePresence();
+	return kIOReturnSuccess;
+}
+
+IOReturn VoodooHDADevice::diagInstallInjectedELD(UInt8 channel, UInt16 length)
+{
+	if (channel >= kVoodooHDADiagMaxOverrideChannels)
+		return kIOReturnBadArgument;
+	if (length > kVoodooHDADiagMaxELDLen)
+		return kIOReturnBadArgument;
+	if (!mDiagELDPtr) {
+		if (!allocateDiagBuffers())
+			return kIOReturnNoMemory;
+	}
+	IOLockLock(mDiagLock);
+	if (length > 0)
+		bcopy(mDiagELDPtr, mDiagInjectedELD[channel], length);
+	mDiagInjectedELDLen[channel] = length;
+	IOLockUnlock(mDiagLock);
+	logMsg("diag: installed injected ELD ch=%u len=%u\n", channel, length);
+	updateHDMIEnginePresence();
+	return kIOReturnSuccess;
+}
+
+IOReturn VoodooHDADevice::diagCollectSnapshot(UInt8 channel)
+{
+	if (!mDiagSnapshotPtr) {
+		if (!allocateDiagBuffers())
+			return kIOReturnNoMemory;
+	}
+	if (channel >= mNumChannels)
+		return kIOReturnBadArgument;
+
+	Channel *ch = &mChannels[channel];
+	VHDADiagSnapshot *s = (VHDADiagSnapshot *) mDiagSnapshotPtr;
+
+	IOLockLock(mDiagLock);
+	bzero(s, sizeof(*s));
+	s->magic = kVoodooHDADiagSnapshotMagic;
+	s->version = 1;
+	s->size = sizeof(*s);
+
+	AbsoluteTime now;
+	clock_get_uptime(&now);
+	UInt64 ns = 0;
+	absolutetime_to_nanoseconds(now, &ns);
+	s->timestamp_ns_lo = (UInt32) (ns & 0xFFFFFFFFU);
+	s->timestamp_ns_hi = (UInt32) (ns >> 32);
+
+	s->channel = channel;
+	s->stream_id = (UInt32) ch->streamId;
+	s->stream_offset = (UInt32) ch->off;
+	s->num_blocks = ch->numBlocks;
+	s->block_size = ch->blockSize;
+	s->buf_size = ch->buffer ? (UInt32) ch->buffer->size : 0;
+	s->digital = ch->pcmDevice ? ch->pcmDevice->digital : 0;
+
+	Codec *codec = NULL;
+	if (ch->funcGroup)
+		codec = ch->funcGroup->codec;
+	if (codec) {
+		s->cad = (UInt32) codec->cad;
+		s->codec_vendor = codec->vendorId;
+		s->codec_device = codec->deviceId;
+		s->codec_family = (UInt32) appleGfxHdaAmdCodecFamily(codec->hdaPciDeviceId);
+		s->hda_pci_device_id = codec->hdaPciDeviceId;
+	}
+
+	/* Identify primary converter NID and HDMI pin NID */
+	nid_t convNid = -1;
+	if (ch->funcGroup && ch->io[0] != -1) {
+		convNid = ch->io[0];
+	}
+	s->conv_nid = (UInt32) convNid;
+	s->pin_nid = (UInt32) getHDMIPinForChannel(ch);
+
+	/* SDn (stream descriptor) registers — channel->off is the byte offset
+	 * to this stream's register block. */
+	if (mRegBase) {
+		s->sd_ctl = (UInt32) readData8(ch->off + HDAC_SDCTL0)
+		            | ((UInt32) readData8(ch->off + HDAC_SDCTL1) << 8)
+		            | ((UInt32) readData8(ch->off + HDAC_SDCTL2) << 16);
+		s->sd_sts = readData8(ch->off + HDAC_SDSTS);
+		s->sd_lpib = readData32(ch->off + HDAC_SDLPIB);
+		s->sd_format = readData16(ch->off + HDAC_SDFMT);
+		s->sd_fifow = readData16(ch->off + 0x0e); /* SDFIFOW */
+		s->sd_fifod = readData16(ch->off + HDAC_SDFIFOS);
+
+		/* Global controller registers */
+		s->gctl = readData32(HDAC_GCTL);
+		s->gcap = readData16(HDAC_GCAP);
+		s->outpay = readData16(HDAC_OUTPAY);
+		s->inpay = readData16(HDAC_INPAY);
+		s->wakeen = readData16(HDAC_WAKEEN);
+		s->statests = readData16(HDAC_STATESTS);
+		s->intctl = readData32(HDAC_INTCTL);
+		s->intsts = readData32(HDAC_INTSTS);
+		s->corbsts = readData8(HDAC_CORBSTS);
+		s->rirbsts = readData8(HDAC_RIRBSTS);
+		s->dpiblbase = readData32(HDAC_DPIBLBASE);
+		s->dpibubase = readData32(HDAC_DPIBUBASE);
+	}
+
+	/* DPIB (DMA Position) — populated by HW into mDmaPosMem if enabled */
+	if (mDmaPosMem && mDmaPosMem->virtAddr) {
+		UInt32 *dpib = (UInt32 *) mDmaPosMem->virtAddr;
+		UInt32 streamIdx = (UInt32) (ch->off - 0x80) / 0x20;
+		s->sd_dpib = dpib[streamIdx * 2];
+	}
+
+	/* PCI command register (link / bus master state) */
+	if (mPciNub)
+		s->pci_command = mPciNub->configRead16(kIOPCIConfigCommand);
+
+	/* Codec verb readback for converter and pin */
+	if (codec && convNid > 0) {
+		nid_t cad = (nid_t) codec->cad;
+		s->conv_stream_format = sendCommand(HDA_CMD_GET_CONV_FMT(cad, convNid), cad);
+		UInt32 dig = sendCommand(HDA_CMD_GET_DIGITAL_CONV_FMT(cad, convNid), cad);
+		s->conv_dig_conv_fmt1 = dig & 0xFFU;
+		s->conv_dig_conv_fmt2 = (dig >> 8) & 0xFFU;
+		s->conv_stream_chan = sendCommand(HDA_CMD_GET_CONV_STREAM_CHAN(cad, convNid), cad);
+		s->conv_chan_count = sendCommand(HDA_CMD_12BIT(cad, convNid, 0xf2d, 0), cad);
+		s->conv_power_state = sendCommand(HDA_CMD_GET_POWER_STATE(cad, convNid), cad);
+	}
+
+	if (codec && s->pin_nid != 0xFFFFFFFFU && s->pin_nid > 0) {
+		nid_t cad = (nid_t) codec->cad;
+		nid_t pin = (nid_t) s->pin_nid;
+		s->pin_widget_ctrl = sendCommand(HDA_CMD_GET_PIN_WIDGET_CTRL(cad, pin), cad);
+		s->pin_eapd_btl = sendCommand(HDA_CMD_GET_EAPD_BTL_ENABLE(cad, pin), cad);
+		s->pin_power_state = sendCommand(HDA_CMD_GET_POWER_STATE(cad, pin), cad);
+		s->pin_conn_select = sendCommand(HDA_CMD_GET_CONN_SELECT_CONTROL(cad, pin), cad);
+		s->pin_sense = sendCommand(HDA_CMD_GET_PIN_SENSE(cad, pin), cad);
+	}
+
+	/* BDL (Buffer Descriptor List) — kernel virtual mapping of bdlMem */
+	if (ch->bdlMem && ch->bdlMem->virtAddr && ch->numBlocks > 0) {
+		BdlEntry *bdl = (BdlEntry *) ch->bdlMem->virtAddr;
+		UInt32 cnt = ch->numBlocks;
+		if (cnt > kVoodooHDADiagMaxBdlEntries)
+			cnt = kVoodooHDADiagMaxBdlEntries;
+		for (UInt32 i = 0; i < cnt; i++) {
+			s->bdl[i].addr_lo = bdl[i].addrl;
+			s->bdl[i].addr_hi = bdl[i].addrh;
+			s->bdl[i].length = bdl[i].len;
+			s->bdl[i].ioc = bdl[i].ioc;
+		}
+		s->bdl_count = cnt;
+	}
+
+	/* Override state */
+	s->force_active = diagIsForceActive(channel) ? 1 : 0;
+	if (channel < kVoodooHDADiagMaxOverrideChannels) {
+		UInt16 ilen = mDiagInjectedELDLen[channel];
+		s->injected_eld_len = ilen;
+		if (ilen > 0)
+			bcopy(mDiagInjectedELD[channel], s->injected_eld, ilen);
+	}
+
+	/* Framebuffer / EDID layer */
+	if (mFBNotifier && codec) {
+		uint8_t *eldOut = NULL;
+		int eldLenOut = 0;
+		if (mFBNotifier->getFramebufferELD(codec->cad, (nid_t) s->pin_nid,
+		                                    &eldOut, &eldLenOut) && eldOut && eldLenOut > 0) {
+			s->fb_present = 1;
+			s->fb_eld_valid = 1;
+			s->fb_eld_len = (UInt32) eldLenOut;
+			UInt32 cpy = (UInt32) eldLenOut;
+			if (cpy > kVoodooHDADiagMaxELDLen)
+				cpy = kVoodooHDADiagMaxELDLen;
+			bcopy(eldOut, s->eld_blob, cpy);
+		}
+	}
+
+	IOLockUnlock(mDiagLock);
+	return kIOReturnSuccess;
+}
+
+IOReturn VoodooHDADevice::diagResetPCMRing()
+{
+	if (!mDiagPCMRingPtr)
+		return kIOReturnSuccess;
+	VHDAPCMRingHeader *hdr = (VHDAPCMRingHeader *) mDiagPCMRingPtr;
+	IOLockLock(mDiagLock);
+	hdr->head = 0;
+	hdr->tail = 0;
+	hdr->dropped_bytes = 0;
+	IOLockUnlock(mDiagLock);
+	return kIOReturnSuccess;
+}
+
+IOReturn VoodooHDADevice::diagClearOverride(UInt8 channel)
+{
+	if (channel == 0xFF) {
+		IOLockLock(mDiagLock);
+		mDiagForceActiveMask = 0;
+		bzero(mDiagInjectedELDLen, sizeof(mDiagInjectedELDLen));
+		IOLockUnlock(mDiagLock);
+		updateHDMIEnginePresence();
+		return kIOReturnSuccess;
+	}
+	if (channel >= kVoodooHDADiagMaxOverrideChannels)
+		return kIOReturnBadArgument;
+	IOLockLock(mDiagLock);
+	mDiagForceActiveMask &= ~(1U << channel);
+	mDiagInjectedELDLen[channel] = 0;
+	IOLockUnlock(mDiagLock);
+	updateHDMIEnginePresence();
+	return kIOReturnSuccess;
+}
+
+bool VoodooHDADevice::diagIsForceActive(UInt8 channel) const
+{
+	if (channel >= kVoodooHDADiagMaxOverrideChannels)
+		return false;
+	return (mDiagForceActiveMask & (1U << channel)) != 0;
+}
+
+bool VoodooHDADevice::diagGetInjectedELD(UInt8 channel, const UInt8 **outBlob, UInt16 *outLen) const
+{
+	if (channel >= kVoodooHDADiagMaxOverrideChannels)
+		return false;
+	UInt16 len = mDiagInjectedELDLen[channel];
+	if (!len)
+		return false;
+	if (outBlob)
+		*outBlob = mDiagInjectedELD[channel];
+	if (outLen)
+		*outLen = len;
+	return true;
+}
+
+void VoodooHDADevice::injectInjectedELDForSlot(int slotIdx)
+{
+	if (slotIdx < 0 || slotIdx >= mNumHDMIEngines)
+		return;
+	HDMIEngineSlot *slot = &mHDMIEngines[slotIdx];
+	if (!slot->channel || !mChannels)
+		return;
+	SInt32 chIdx = static_cast<SInt32>(slot->channel - mChannels);
+	if (chIdx < 0 || chIdx >= kVoodooHDADiagMaxOverrideChannels)
+		return;
+	UInt16 len = mDiagInjectedELDLen[chIdx];
+	if (!len)
+		return;
+	Codec *codec = mCodecs[slot->cad];
+	if (!codec)
+		return;
+	for (int fg = 0; fg < codec->numFuncGroups; fg++) {
+		FunctionGroup *funcGroup = &codec->funcGroups[fg];
+		if (funcGroup->nodeType != HDA_PARAM_FCT_GRP_TYPE_NODE_TYPE_AUDIO)
+			continue;
+		Widget *w = widgetGet(funcGroup, slot->pinNid);
+		if (!w)
+			continue;
+		if (w->eld) {
+			freeMem(w->eld);
+			w->eld = NULL;
+			w->eld_len = 0;
+		}
+		w->eld = (uint8_t *) allocMem(len);
+		if (w->eld) {
+			memcpy(w->eld, mDiagInjectedELD[chIdx], len);
+			w->eld_len = len;
+		}
+		return;
+	}
+}
+
+void VoodooHDADevice::diagTapWriteSamples(UInt32 channelIdx, const void *samples, UInt32 numFrames,
+                                          UInt32 frameBytes, UInt32 sampleRate, UInt32 channels,
+                                          UInt32 bitsPerSample)
+{
+	SInt32 tap = mDiagTapChannel;
+	if (tap < 0 || (UInt32) tap != channelIdx)
+		return;
+	if (!mDiagPCMRingPtr || !samples || !numFrames || !frameBytes)
+		return;
+
+	VHDAPCMRingHeader *hdr = (VHDAPCMRingHeader *) mDiagPCMRingPtr;
+	UInt8 *data = (UInt8 *) mDiagPCMRingPtr + hdr->ring_offset;
+	UInt32 ring_size = hdr->ring_size;
+
+	hdr->sample_rate = sampleRate;
+	hdr->channels = channels;
+	hdr->bits_per_sample = bitsPerSample;
+	hdr->frame_bytes = frameBytes;
+	hdr->channel_index = channelIdx;
+
+	UInt32 totalBytes = numFrames * frameBytes;
+	UInt64 head = hdr->head;
+	UInt64 tail = hdr->tail;
+	UInt64 used = head - tail;
+	UInt64 avail = (used < ring_size) ? (ring_size - used) : 0;
+
+	if (totalBytes > avail) {
+		UInt32 drop = totalBytes - (UInt32) avail;
+		OSAddAtomic((SInt32) drop, (volatile SInt32 *) &hdr->dropped_bytes);
+		totalBytes = (UInt32) avail;
+		if (!totalBytes)
+			return;
+	}
+
+	UInt32 pos = (UInt32) (head % ring_size);
+	UInt32 first = ring_size - pos;
+	if (first > totalBytes)
+		first = totalBytes;
+	bcopy(samples, data + pos, first);
+	if (totalBytes > first)
+		bcopy((const UInt8 *) samples + first, data, totalBytes - first);
+
+	OSSynchronizeIO();
+	hdr->head = head + totalBytes;
 }

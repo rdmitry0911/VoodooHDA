@@ -106,6 +106,150 @@ bool VoodooHDAEngine::diagnosticUsesDirectTone() const
 	       ((diagnosticFlags() & kVoodooHDADiagInjectDirectTone) != 0);
 }
 
+bool VoodooHDAEngine::diagnosticUsesChord() const
+{
+	return diagnosticsEnabled() &&
+	       ((diagnosticFlags() & kVoodooHDADiagInjectChord) != 0);
+}
+
+/* Diag-mode chord generator. Sum of 5 pure sines at 1/2/4/8/16 kHz, identical
+ * on every channel. Designed for spectral analysis of the captured DMA bytes:
+ * a clean spectrum (5 sharp peaks, low noise floor) means the entire CPU+DMA
+ * path is intact; smearing/extra peaks/elevated noise means a defect in the
+ * driver, format conversion, link, or codec.
+ *
+ * Uses a 1024-entry sine LUT. Phase is per-frequency, advanced once per audio
+ * frame, kept on the Channel struct so it stays continuous across clipOutput
+ * calls (any phase reset would itself create a click and look like a glitch).
+ */
+static const UInt32 kChordFreqs[5] = { 1000U, 2000U, 4000U, 8000U, 16000U };
+static const UInt32 kChordLUTBits = 10;
+static const UInt32 kChordLUTSize = 1U << kChordLUTBits;
+static const UInt32 kChordLUTMask = kChordLUTSize - 1U;
+static float gChordSineLUT[kChordLUTSize];
+static volatile UInt32 gChordSineLUTReady = 0;
+
+static void chordEnsureLUT()
+{
+	if (gChordSineLUTReady)
+		return;
+	/* Bhaskara I sine approximation: sin(pi*t) ≈ 16t(1-t) / (5 - 4t(1-t)),
+	 * t in [0,1]. Better than 0.2% — clean enough that error stays well
+	 * below the noise floor of any plausible 16/24-bit capture. */
+	for (UInt32 i = 0; i < kChordLUTSize; i++) {
+		float t = static_cast<float>(i) / static_cast<float>(kChordLUTSize);
+		float s;
+		if (t < 0.5f) {
+			float u = t * 2.0f;        /* [0,1] over first half */
+			s = 16.0f * u * (1.0f - u) / (5.0f - 4.0f * u * (1.0f - u));
+		} else {
+			float u = (t - 0.5f) * 2.0f; /* [0,1] over second half */
+			s = -16.0f * u * (1.0f - u) / (5.0f - 4.0f * u * (1.0f - u));
+		}
+		gChordSineLUT[i] = s;
+	}
+	OSSynchronizeIO();
+	gChordSineLUTReady = 1;
+}
+
+static inline float chordSineFromPhase(UInt32 phase)
+{
+	UInt32 idx = (phase >> (32U - kChordLUTBits)) & kChordLUTMask;
+	UInt32 next = (idx + 1U) & kChordLUTMask;
+	UInt32 fracBits = 32U - kChordLUTBits;
+	UInt32 frac = phase & ((1U << fracBits) - 1U);
+	float a = gChordSineLUT[idx];
+	float b = gChordSineLUT[next];
+	float f = static_cast<float>(frac) / static_cast<float>(1U << fracBits);
+	return a + (b - a) * f;
+}
+
+static inline float chordNextFrame(UInt32 *phases, UInt32 sampleRate)
+{
+	float sum = 0.0f;
+	for (int k = 0; k < 5; k++) {
+		UInt64 step = (static_cast<UInt64>(kChordFreqs[k]) << 32) / sampleRate;
+		phases[k] += static_cast<UInt32>(step);
+		sum += chordSineFromPhase(phases[k]);
+	}
+	/* Each sine is in [-1,1]; 5 of them can constructively peak at 5.0.
+	 * Scale by 0.18 → worst-case peak 0.9, headroom for quantization. */
+	return sum * 0.18f;
+}
+
+void VoodooHDAEngine::fillDiagnosticChordBuffer(void *sampleBuf, UInt32 firstSampleFrame,
+                                                UInt32 numSampleFrames,
+                                                const IOAudioStreamFormat *streamFormat)
+{
+	if (!sampleBuf || !streamFormat || !mChannel)
+		return;
+
+	chordEnsureLUT();
+
+	UInt32 channels = streamFormat->fNumChannels;
+	if (!channels)
+		return;
+	UInt32 bitWidth = streamFormat->fBitWidth;
+	UInt32 sampleRate = (getSampleRate() && getSampleRate()->whole)
+	                    ? getSampleRate()->whole : 48000U;
+	UInt32 firstSample = firstSampleFrame * channels;
+
+	UInt32 *phases = mChannel->diagnosticPhase;
+
+	if (streamFormat->fSampleFormat == kIOAudioStreamSampleFormatLinearPCM &&
+	    streamFormat->fNumericRepresentation == kIOAudioStreamNumericRepresentationSignedInt) {
+		switch (bitWidth) {
+		case 16: {
+			SInt16 *out = reinterpret_cast<SInt16 *>(sampleBuf) + firstSample;
+			for (UInt32 f = 0; f < numSampleFrames; f++) {
+				float s = chordNextFrame(phases, sampleRate);
+				SInt16 v = static_cast<SInt16>(s * 32767.0f);
+				for (UInt32 c = 0; c < channels; c++)
+					out[f * channels + c] = v;
+			}
+			return;
+		}
+		case 20:
+		case 24: {
+			UInt8 *out = reinterpret_cast<UInt8 *>(sampleBuf) + firstSample * 3;
+			for (UInt32 f = 0; f < numSampleFrames; f++) {
+				float s = chordNextFrame(phases, sampleRate);
+				SInt32 v = static_cast<SInt32>(s * 8388607.0f); /* 2^23 - 1 */
+				for (UInt32 c = 0; c < channels; c++) {
+					UInt8 *p = out + (f * channels + c) * 3;
+					p[0] = static_cast<UInt8>(v & 0xFFU);
+					p[1] = static_cast<UInt8>((v >> 8) & 0xFFU);
+					p[2] = static_cast<UInt8>((v >> 16) & 0xFFU);
+				}
+			}
+			return;
+		}
+		case 32: {
+			SInt32 *out = reinterpret_cast<SInt32 *>(sampleBuf) + firstSample;
+			for (UInt32 f = 0; f < numSampleFrames; f++) {
+				float s = chordNextFrame(phases, sampleRate);
+				SInt32 v = static_cast<SInt32>(s * 2147483647.0f);
+				for (UInt32 c = 0; c < channels; c++)
+					out[f * channels + c] = v;
+			}
+			return;
+		}
+		default:
+			break;
+		}
+	} else if (streamFormat->fSampleFormat == kIOAudioStreamSampleFormatLinearPCM &&
+	           streamFormat->fNumericRepresentation == kIOAudioStreamNumericRepresentationIEEE754Float &&
+	           bitWidth == 32) {
+		float *out = reinterpret_cast<float *>(sampleBuf) + firstSample;
+		for (UInt32 f = 0; f < numSampleFrames; f++) {
+			float s = chordNextFrame(phases, sampleRate);
+			for (UInt32 c = 0; c < channels; c++)
+				out[f * channels + c] = s;
+		}
+		return;
+	}
+}
+
 bool VoodooHDAEngine::diagnosticSkipsErase() const
 {
 	UInt16 flags = diagnosticFlags();

@@ -447,6 +447,48 @@ public:
 	nid_t getHDMIPinForChannel(Channel *channel);
 	UInt16 diagnosticFlagsForPin(int cad, nid_t pinNid) const;
 	void updateHDMIEnginePresence();
+
+	/* === Diag-mode (HDMI crackle root-cause) ============================
+	 *
+	 * Persistent shared regions for vhda_diag. Allocated lazily on first
+	 * IOConnectMapMemory; freed in stop(). Single-instance state, scoped
+	 * to a chosen engine via mDiagTapChannel / per-channel arrays.
+	 */
+	IOLock *mDiagLock;
+	IOBufferMemoryDescriptor *mDiagPCMRingDesc;
+	void *mDiagPCMRingPtr;            /* kernel virtual addr of the ring (header + data) */
+	IOBufferMemoryDescriptor *mDiagSnapshotDesc;
+	void *mDiagSnapshotPtr;
+	IOBufferMemoryDescriptor *mDiagELDDesc;
+	void *mDiagELDPtr;
+
+	volatile SInt32 mDiagTapChannel;  /* engine index whose samples feed the ring; -1 = off */
+	UInt32 mDiagForceActiveMask;       /* bit i = engine i forced "monitor present" */
+	UInt8  mDiagInjectedELD[kVoodooHDADiagMaxOverrideChannels][kVoodooHDADiagMaxELDLen];
+	UInt16 mDiagInjectedELDLen[kVoodooHDADiagMaxOverrideChannels];
+
+	bool   allocateDiagBuffers();
+	void   freeDiagBuffers();
+
+	/* Action handlers (called from handleAction) */
+	IOReturn diagSetPCMTap(UInt8 channel, bool enable);
+	IOReturn diagSetForceActive(UInt8 channel, bool enable);
+	IOReturn diagInstallInjectedELD(UInt8 channel, UInt16 length);
+	IOReturn diagCollectSnapshot(UInt8 channel);
+	IOReturn diagResetPCMRing();
+	IOReturn diagClearOverride(UInt8 channel);
+
+	/* Realtime tap entry (called from VoodooHDAEngine::clipOutputSamples) */
+	void   diagTapWriteSamples(UInt32 channelIdx, const void *samples, UInt32 numFrames,
+	                           UInt32 frameBytes, UInt32 sampleRate, UInt32 channels,
+	                           UInt32 bitsPerSample);
+
+	/* Headless / ELD override accessors used by other modules */
+	bool   diagIsForceActive(UInt8 channel) const;
+	bool   diagGetInjectedELD(UInt8 channel, const UInt8 **outBlob, UInt16 *outLen) const;
+
+	/* Internal: install injected ELD blob into the codec widget for a slot */
+	void   injectInjectedELDForSlot(int slotIdx);
 };
 
 #endif

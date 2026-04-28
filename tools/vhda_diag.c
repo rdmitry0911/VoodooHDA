@@ -2,10 +2,16 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "../tranc/Shared.h"
 
@@ -33,14 +39,66 @@ static const FlagDef kFlags[] = {
 	{ "dump-gpu", kVoodooHDADiagDumpGPUStateOnStream },
 	{ "force-standard", kVoodooHDADiagForceStandardHDMIPath },
 	{ "force-ati", kVoodooHDADiagForceATIVendorPath },
+	{ "chord", kVoodooHDADiagInjectChord },
 };
+
+/* === ELD presets ====================================================
+ * CEA-861 ELD blobs constructed inline. Each preset advertises a single
+ * Short Audio Descriptor (SAD) and a speaker-allocation byte. Sample-rate
+ * and bit-depth flags follow CEA-861-D. Sample rate flags (byte 1):
+ *   bit0 32k / bit1 44.1k / bit2 48k / bit3 88.2k / bit4 96k / bit5 176.4k
+ *   bit6 192k. Bit-depth flags (byte 2): bit0 16 / bit1 20 / bit2 24.
+ * Speaker allocation: 0x01 = FL/FR; 0x4F = 7.1 (FL/FR + LFE + FC + RL/RR + RLC/RRC).
+ */
+typedef struct {
+	const char *name;
+	UInt8 spkalloc;
+	UInt8 numSADs;
+	UInt8 sads[15]; /* up to 5 SADs * 3 bytes each */
+	const char *desc;
+} EldPreset;
+
+static const EldPreset kEldPresets[] = {
+	{ "2ch_48k_16",   0x01, 1, { 0x09, 0x04, 0x01 }, "stereo LPCM 48kHz/16-bit" },
+	{ "2ch_48k_24",   0x01, 1, { 0x09, 0x04, 0x07 }, "stereo LPCM 48kHz/16/20/24-bit" },
+	{ "8ch_48k_24",   0x4F, 1, { 0x0F, 0x04, 0x07 }, "7.1 LPCM 48kHz/16/20/24-bit" },
+	{ "8ch_96k_24",   0x4F, 1, { 0x0F, 0x14, 0x07 }, "7.1 LPCM 48/96kHz/16/20/24-bit" },
+	{ "8ch_192k_24",  0x4F, 1, { 0x0F, 0x54, 0x07 }, "7.1 LPCM 48/96/192kHz/16/20/24-bit" },
+};
+
+static int buildEldFromPreset(const EldPreset *p, UInt8 *out, size_t outCap)
+{
+	int sadBytes = p->numSADs * 3;
+	int baseline = 4 + sadBytes;
+	int padded = (baseline + 3) & ~3;
+	int total = 4 + padded;
+	if ((size_t)total > outCap)
+		return -1;
+	memset(out, 0, total);
+	out[0] = 0x10; /* ELD_Ver = 2 in bits 7:3 */
+	out[2] = padded / 4;
+	out[4] = (p->numSADs << 4); /* mnl = 0 */
+	out[5] = 0x00; /* HDMI connection type */
+	out[6] = 0;    /* audio sync delay */
+	out[7] = p->spkalloc;
+	memcpy(out + 8, p->sads, sadBytes);
+	return total;
+}
+
+static const EldPreset *findEldPreset(const char *name)
+{
+	for (size_t i = 0; i < sizeof(kEldPresets) / sizeof(kEldPresets[0]); i++)
+		if (strcasecmp(name, kEldPresets[i].name) == 0)
+			return &kEldPresets[i];
+	return NULL;
+}
 
 static void usage(const char *prog)
 {
 	fprintf(stderr,
 	    "Usage:\n"
 	    "  %s [--service=N|--service=all] <command> [args...]\n"
-	    "Commands:\n"
+	    "Commands (telemetry):\n"
 	    "  services\n"
 	    "  list\n"
 	    "  flags\n"
@@ -51,6 +109,17 @@ static void usage(const char *prog)
 	    "  disable <channel> <flag[,flag...]>\n"
 	    "  clear <channel>\n"
 	    "  verbose <0-4>\n"
+	    "Commands (diag mode — HDMI crackle root-cause):\n"
+	    "  tap-on <channel>\n"
+	    "  tap-off <channel>\n"
+	    "  tap-reset\n"
+	    "  dump-pcm <channel> <out.wav>\n"
+	    "  snapshot <channel> [out.json]\n"
+	    "  force-active <channel> <on|off>\n"
+	    "  set-eld <channel> <preset>\n"
+	    "  clear-override <channel|all>\n"
+	    "  list-elds\n"
+	    "  chord <channel> <on|off>\n"
 	    "Options:\n"
 	    "  --service=N      target VoodooHDADevice index N (default 0)\n"
 	    "  --service=all    repeat read-only command for every service\n"
@@ -342,6 +411,345 @@ static int setVerbose(io_connect_t connect, UInt8 level)
 	return 0;
 }
 
+/* === Diag-mode helpers ============================================== */
+
+static kern_return_t mapDiagRegion(io_connect_t connect, uint32_t type,
+                                   IOOptionBits options,
+                                   mach_vm_address_t *addr, mach_vm_size_t *size)
+{
+	*addr = 0;
+	*size = 0;
+	return IOConnectMapMemory64(connect, type, mach_task_self(), addr, size,
+	                             kIOMapAnywhere | options);
+}
+
+static void unmapDiagRegion(io_connect_t connect, uint32_t type, mach_vm_address_t addr)
+{
+	if (addr)
+		IOConnectUnmapMemory64(connect, type, mach_task_self(), addr);
+}
+
+static int writeWavFile(const char *path, const void *samples, uint32_t bytes,
+                        uint32_t sampleRate, uint16_t channels, uint16_t bitsPerSample)
+{
+	FILE *f = fopen(path, "wb");
+	if (!f) {
+		fprintf(stderr, "open %s: %s\n", path, strerror(errno));
+		return 1;
+	}
+	uint32_t byteRate = sampleRate * channels * (bitsPerSample / 8);
+	uint16_t blockAlign = channels * (bitsPerSample / 8);
+	uint32_t dataSize = bytes;
+	uint32_t riffSize = 36 + dataSize;
+
+	uint8_t hdr[44];
+	memcpy(hdr + 0, "RIFF", 4);
+	hdr[4] = riffSize & 0xff;
+	hdr[5] = (riffSize >> 8) & 0xff;
+	hdr[6] = (riffSize >> 16) & 0xff;
+	hdr[7] = (riffSize >> 24) & 0xff;
+	memcpy(hdr + 8, "WAVEfmt ", 8);
+	hdr[16] = 16; hdr[17] = 0; hdr[18] = 0; hdr[19] = 0; /* fmt chunk size */
+	hdr[20] = 1;  hdr[21] = 0;                           /* PCM */
+	hdr[22] = channels & 0xff; hdr[23] = (channels >> 8) & 0xff;
+	hdr[24] = sampleRate & 0xff;
+	hdr[25] = (sampleRate >> 8) & 0xff;
+	hdr[26] = (sampleRate >> 16) & 0xff;
+	hdr[27] = (sampleRate >> 24) & 0xff;
+	hdr[28] = byteRate & 0xff;
+	hdr[29] = (byteRate >> 8) & 0xff;
+	hdr[30] = (byteRate >> 16) & 0xff;
+	hdr[31] = (byteRate >> 24) & 0xff;
+	hdr[32] = blockAlign & 0xff; hdr[33] = (blockAlign >> 8) & 0xff;
+	hdr[34] = bitsPerSample & 0xff; hdr[35] = (bitsPerSample >> 8) & 0xff;
+	memcpy(hdr + 36, "data", 4);
+	hdr[40] = dataSize & 0xff;
+	hdr[41] = (dataSize >> 8) & 0xff;
+	hdr[42] = (dataSize >> 16) & 0xff;
+	hdr[43] = (dataSize >> 24) & 0xff;
+	if (fwrite(hdr, 1, 44, f) != 44 ||
+	    (bytes && fwrite(samples, 1, bytes, f) != bytes)) {
+		fprintf(stderr, "write %s: %s\n", path, strerror(errno));
+		fclose(f);
+		return 1;
+	}
+	fclose(f);
+	return 0;
+}
+
+static int cmdTapOn(io_connect_t connect, UInt8 channel)
+{
+	UInt32 action = (UInt32)kVoodooHDAActionDiagPCMTap |
+	                ((UInt32)channel << 8) | ((UInt32)1 << 16);
+	size_t outSize = sizeof(UInt32);
+	UInt32 out = 0;
+	kern_return_t kr = sendAction(connect, action, &out, &outSize);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "tap-on failed: 0x%x\n", kr);
+		return 1;
+	}
+	return 0;
+}
+
+static int cmdTapOff(io_connect_t connect, UInt8 channel)
+{
+	UInt32 action = (UInt32)kVoodooHDAActionDiagPCMTap | ((UInt32)channel << 8);
+	size_t outSize = sizeof(UInt32);
+	UInt32 out = 0;
+	kern_return_t kr = sendAction(connect, action, &out, &outSize);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "tap-off failed: 0x%x\n", kr);
+		return 1;
+	}
+	return 0;
+}
+
+static int cmdTapReset(io_connect_t connect)
+{
+	UInt32 action = (UInt32)kVoodooHDAActionDiagPCMRingReset;
+	size_t outSize = sizeof(UInt32);
+	UInt32 out = 0;
+	kern_return_t kr = sendAction(connect, action, &out, &outSize);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "tap-reset failed: 0x%x\n", kr);
+		return 1;
+	}
+	return 0;
+}
+
+static int cmdDumpPCM(io_connect_t connect, UInt8 channel, const char *path)
+{
+	mach_vm_address_t addr = 0;
+	mach_vm_size_t size = 0;
+	(void)channel;
+	kern_return_t kr = mapDiagRegion(connect, kVoodooHDAMemoryDiagPCMRing, 0, &addr, &size);
+	if (kr != KERN_SUCCESS || !addr || size < kVoodooHDADiagPCMRingHeaderSize) {
+		fprintf(stderr, "map PCM ring failed: 0x%x size=%llu\n", kr, (unsigned long long)size);
+		return 1;
+	}
+
+	const VHDAPCMRingHeader *hdr = (const VHDAPCMRingHeader *)(uintptr_t)addr;
+	if (hdr->magic != kVoodooHDADiagPCMRingMagic) {
+		fprintf(stderr, "PCM ring magic mismatch: got 0x%x\n", (unsigned)hdr->magic);
+		unmapDiagRegion(connect, kVoodooHDAMemoryDiagPCMRing, addr);
+		return 1;
+	}
+
+	uint64_t head = hdr->head;
+	uint64_t tail = hdr->tail;
+	uint32_t ring_size = hdr->ring_size;
+	uint64_t used = head - tail;
+	if (used > ring_size)
+		used = ring_size;
+	uint32_t bytes = (uint32_t)used;
+
+	uint32_t sampleRate = hdr->sample_rate ? hdr->sample_rate : 48000;
+	uint16_t channels16 = hdr->channels ? (uint16_t)hdr->channels : 2;
+	uint16_t bps = hdr->bits_per_sample ? (uint16_t)hdr->bits_per_sample : 16;
+
+	printf("dump-pcm: head=%llu tail=%llu used=%u dropped=%u rate=%u ch=%u bps=%u\n",
+	    (unsigned long long)head, (unsigned long long)tail, bytes,
+	    (unsigned)hdr->dropped_bytes, sampleRate, channels16, bps);
+
+	if (bytes == 0) {
+		fprintf(stderr, "no samples captured (engine not running while tap was on?)\n");
+		unmapDiagRegion(connect, kVoodooHDAMemoryDiagPCMRing, addr);
+		return 2;
+	}
+
+	const uint8_t *data = (const uint8_t *)(uintptr_t)addr + hdr->ring_offset;
+	uint32_t pos = (uint32_t)(tail % ring_size);
+	uint32_t first = ring_size - pos;
+	if (first > bytes)
+		first = bytes;
+	uint8_t *linear = (uint8_t *)malloc(bytes);
+	if (!linear) {
+		fprintf(stderr, "malloc %u bytes failed\n", bytes);
+		unmapDiagRegion(connect, kVoodooHDAMemoryDiagPCMRing, addr);
+		return 1;
+	}
+	memcpy(linear, data + pos, first);
+	if (bytes > first)
+		memcpy(linear + first, data, bytes - first);
+
+	int rc = writeWavFile(path, linear, bytes, sampleRate, channels16, bps);
+	free(linear);
+	unmapDiagRegion(connect, kVoodooHDAMemoryDiagPCMRing, addr);
+	return rc;
+}
+
+static void hexDump(FILE *f, const uint8_t *bytes, uint32_t len)
+{
+	for (uint32_t i = 0; i < len; i++) {
+		if (i) fputc(',', f);
+		fprintf(f, "%u", (unsigned)bytes[i]);
+	}
+}
+
+static int cmdSnapshot(io_connect_t connect, UInt8 channel, const char *path)
+{
+	UInt32 action = (UInt32)kVoodooHDAActionDiagSnapshot | ((UInt32)channel << 8);
+	size_t outSize = sizeof(UInt32);
+	UInt32 out = 0;
+	kern_return_t kr = sendAction(connect, action, &out, &outSize);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "snapshot trigger failed: 0x%x\n", kr);
+		return 1;
+	}
+
+	mach_vm_address_t addr = 0;
+	mach_vm_size_t size = 0;
+	kr = mapDiagRegion(connect, kVoodooHDAMemoryDiagSnapshot, kIOMapReadOnly, &addr, &size);
+	if (kr != KERN_SUCCESS || !addr || size < sizeof(VHDADiagSnapshot)) {
+		fprintf(stderr, "map snapshot failed: 0x%x size=%llu\n",
+		        kr, (unsigned long long)size);
+		return 1;
+	}
+
+	const VHDADiagSnapshot *s = (const VHDADiagSnapshot *)(uintptr_t)addr;
+	if (s->magic != kVoodooHDADiagSnapshotMagic) {
+		fprintf(stderr, "snapshot magic mismatch: 0x%x\n", (unsigned)s->magic);
+		unmapDiagRegion(connect, kVoodooHDAMemoryDiagSnapshot, addr);
+		return 1;
+	}
+
+	FILE *f = path ? fopen(path, "w") : stdout;
+	if (!f) {
+		fprintf(stderr, "open %s: %s\n", path, strerror(errno));
+		unmapDiagRegion(connect, kVoodooHDAMemoryDiagSnapshot, addr);
+		return 1;
+	}
+
+	fprintf(f, "{\n");
+	fprintf(f, "  \"version\": %u,\n", (unsigned)s->version);
+	fprintf(f, "  \"timestamp_ns\": %llu,\n",
+	        ((uint64_t)s->timestamp_ns_hi << 32) | s->timestamp_ns_lo);
+	fprintf(f, "  \"channel\": %u, \"cad\": %u, \"pin_nid\": %u, \"conv_nid\": %u,\n",
+	        s->channel, s->cad, s->pin_nid, s->conv_nid);
+	fprintf(f, "  \"digital\": %u, \"stream_id\": %u, \"stream_offset\": \"0x%x\",\n",
+	        s->digital, s->stream_id, s->stream_offset);
+	fprintf(f, "  \"buf_size\": %u, \"num_blocks\": %u, \"block_size\": %u,\n",
+	        s->buf_size, s->num_blocks, s->block_size);
+	fprintf(f, "  \"sd\": { \"ctl\": \"0x%x\", \"sts\": \"0x%x\", \"lpib\": %u, \"dpib\": %u, "
+	        "\"format\": \"0x%x\", \"fifow\": %u, \"fifod\": %u },\n",
+	        s->sd_ctl, s->sd_sts, s->sd_lpib, s->sd_dpib,
+	        s->sd_format, s->sd_fifow, s->sd_fifod);
+	fprintf(f, "  \"global\": { \"gctl\": \"0x%x\", \"gcap\": \"0x%x\", \"intctl\": \"0x%x\", "
+	        "\"intsts\": \"0x%x\", \"corbsts\": \"0x%x\", \"rirbsts\": \"0x%x\", \"statests\": \"0x%x\" },\n",
+	        s->gctl, s->gcap, s->intctl, s->intsts,
+	        s->corbsts, s->rirbsts, s->statests);
+	fprintf(f, "  \"codec\": { \"vendor\": \"0x%04x\", \"device\": \"0x%04x\", "
+	        "\"family\": %u, \"hda_pci_did\": \"0x%04x\" },\n",
+	        s->codec_vendor, s->codec_device, s->codec_family, s->hda_pci_device_id);
+	fprintf(f, "  \"converter\": { \"fmt\": \"0x%x\", \"dig_fmt1\": \"0x%x\", \"dig_fmt2\": \"0x%x\", "
+	        "\"chan_count\": %u, \"stream_chan\": \"0x%x\", \"power_state\": \"0x%x\" },\n",
+	        s->conv_stream_format, s->conv_dig_conv_fmt1, s->conv_dig_conv_fmt2,
+	        s->conv_chan_count, s->conv_stream_chan, s->conv_power_state);
+	fprintf(f, "  \"pin\": { \"widget_ctrl\": \"0x%x\", \"eapd_btl\": \"0x%x\", "
+	        "\"power_state\": \"0x%x\", \"conn_select\": %u, \"sense\": \"0x%x\" },\n",
+	        s->pin_widget_ctrl, s->pin_eapd_btl, s->pin_power_state,
+	        s->pin_conn_select, s->pin_sense);
+	fprintf(f, "  \"override\": { \"force_active\": %u, \"injected_eld_len\": %u },\n",
+	        s->force_active, s->injected_eld_len);
+	fprintf(f, "  \"fb\": { \"present\": %u, \"eld_valid\": %u, \"eld_len\": %u, \"dip_len\": %u },\n",
+	        s->fb_present, s->fb_eld_valid, s->fb_eld_len, s->fb_dip_len);
+	fprintf(f, "  \"bdl\": [");
+	for (uint32_t i = 0; i < s->bdl_count && i < kVoodooHDADiagMaxBdlEntries; i++) {
+		fprintf(f, "%s\n    { \"addr\": \"0x%llx\", \"len\": %u, \"ioc\": %u }",
+		    i ? "," : "",
+		    ((uint64_t)s->bdl[i].addr_hi << 32) | s->bdl[i].addr_lo,
+		    s->bdl[i].length, s->bdl[i].ioc);
+	}
+	fprintf(f, "\n  ],\n");
+	if (s->fb_eld_len > 0) {
+		fprintf(f, "  \"eld_blob\": [");
+		hexDump(f, s->eld_blob, s->fb_eld_len < kVoodooHDADiagMaxELDLen
+		                       ? s->fb_eld_len : kVoodooHDADiagMaxELDLen);
+		fprintf(f, "],\n");
+	}
+	if (s->injected_eld_len > 0) {
+		fprintf(f, "  \"injected_eld\": [");
+		hexDump(f, s->injected_eld, s->injected_eld_len);
+		fprintf(f, "],\n");
+	}
+	fprintf(f, "  \"pci_command\": \"0x%x\"\n", s->pci_command);
+	fprintf(f, "}\n");
+
+	if (path)
+		fclose(f);
+	unmapDiagRegion(connect, kVoodooHDAMemoryDiagSnapshot, addr);
+	return 0;
+}
+
+static int cmdForceActive(io_connect_t connect, UInt8 channel, bool enable)
+{
+	UInt32 action = (UInt32)kVoodooHDAActionDiagForceActive |
+	                ((UInt32)channel << 8) |
+	                ((UInt32)(enable ? 1 : 0) << 16);
+	size_t outSize = sizeof(UInt32);
+	UInt32 out = 0;
+	kern_return_t kr = sendAction(connect, action, &out, &outSize);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "force-active failed: 0x%x\n", kr);
+		return 1;
+	}
+	return 0;
+}
+
+static int cmdSetEld(io_connect_t connect, UInt8 channel, const char *presetName)
+{
+	const EldPreset *p = findEldPreset(presetName);
+	if (!p) {
+		fprintf(stderr, "unknown ELD preset '%s' (try list-elds)\n", presetName);
+		return 1;
+	}
+	uint8_t blob[kVoodooHDADiagMaxELDLen];
+	int len = buildEldFromPreset(p, blob, sizeof(blob));
+	if (len <= 0) {
+		fprintf(stderr, "failed to build ELD\n");
+		return 1;
+	}
+
+	mach_vm_address_t addr = 0;
+	mach_vm_size_t size = 0;
+	kern_return_t kr = mapDiagRegion(connect, kVoodooHDAMemoryDiagELD, 0, &addr, &size);
+	if (kr != KERN_SUCCESS || !addr || size < (mach_vm_size_t)len) {
+		fprintf(stderr, "map ELD scratch failed: 0x%x size=%llu\n",
+		        kr, (unsigned long long)size);
+		return 1;
+	}
+	memcpy((void *)(uintptr_t)addr, blob, len);
+	unmapDiagRegion(connect, kVoodooHDAMemoryDiagELD, addr);
+
+	UInt32 action = (UInt32)kVoodooHDAActionDiagSetELD |
+	                ((UInt32)channel << 8) |
+	                ((UInt32)(len & 0xff) << 16) |
+	                ((UInt32)((len >> 8) & 0xff) << 24);
+	size_t outSize = sizeof(UInt32);
+	UInt32 out = 0;
+	kr = sendAction(connect, action, &out, &outSize);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "set-eld failed: 0x%x\n", kr);
+		return 1;
+	}
+	printf("set-eld: ch=%u preset=%s len=%d (%s)\n", channel, p->name, len, p->desc);
+	return 0;
+}
+
+static int cmdClearOverride(io_connect_t connect, UInt8 channel)
+{
+	UInt32 action = (UInt32)kVoodooHDAActionDiagClearOverride |
+	                ((UInt32)channel << 8);
+	size_t outSize = sizeof(UInt32);
+	UInt32 out = 0;
+	kern_return_t kr = sendAction(connect, action, &out, &outSize);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "clear-override failed: 0x%x\n", kr);
+		return 1;
+	}
+	return 0;
+}
+
 static int runForService(int serviceIndex, int argc, char **argv, const char *prog)
 {
 	io_connect_t connect = IO_OBJECT_NULL;
@@ -394,6 +802,86 @@ static int runForService(int serviceIndex, int argc, char **argv, const char *pr
 			printTelemetry(&t);
 		}
 		rc = 0;
+		goto done;
+	}
+
+	if (strcmp(cmd, "tap-on") == 0 || strcmp(cmd, "tap-off") == 0) {
+		if (argc != 2) { usage(prog); goto done; }
+		int ch = parseChannel(argv[1], count);
+		if (ch < 0) goto done;
+		rc = (strcmp(cmd, "tap-on") == 0)
+		     ? cmdTapOn(connect, (UInt8)ch)
+		     : cmdTapOff(connect, (UInt8)ch);
+		goto done;
+	}
+
+	if (strcmp(cmd, "tap-reset") == 0) {
+		rc = cmdTapReset(connect);
+		goto done;
+	}
+
+	if (strcmp(cmd, "dump-pcm") == 0) {
+		if (argc != 3) { usage(prog); goto done; }
+		int ch = parseChannel(argv[1], count);
+		if (ch < 0) goto done;
+		rc = cmdDumpPCM(connect, (UInt8)ch, argv[2]);
+		goto done;
+	}
+
+	if (strcmp(cmd, "snapshot") == 0) {
+		if (argc < 2 || argc > 3) { usage(prog); goto done; }
+		int ch = parseChannel(argv[1], count);
+		if (ch < 0) goto done;
+		rc = cmdSnapshot(connect, (UInt8)ch, argc == 3 ? argv[2] : NULL);
+		goto done;
+	}
+
+	if (strcmp(cmd, "force-active") == 0) {
+		if (argc != 3) { usage(prog); goto done; }
+		int ch = parseChannel(argv[1], count);
+		if (ch < 0) goto done;
+		bool enable = (strcasecmp(argv[2], "on") == 0 ||
+		               strcasecmp(argv[2], "1") == 0 ||
+		               strcasecmp(argv[2], "true") == 0);
+		rc = cmdForceActive(connect, (UInt8)ch, enable);
+		goto done;
+	}
+
+	if (strcmp(cmd, "set-eld") == 0) {
+		if (argc != 3) { usage(prog); goto done; }
+		int ch = parseChannel(argv[1], count);
+		if (ch < 0) goto done;
+		rc = cmdSetEld(connect, (UInt8)ch, argv[2]);
+		goto done;
+	}
+
+	if (strcmp(cmd, "clear-override") == 0) {
+		if (argc != 2) { usage(prog); goto done; }
+		UInt8 ch;
+		if (strcasecmp(argv[1], "all") == 0)
+			ch = 0xFF;
+		else {
+			int parsed = parseChannel(argv[1], count);
+			if (parsed < 0) goto done;
+			ch = (UInt8)parsed;
+		}
+		rc = cmdClearOverride(connect, ch);
+		goto done;
+	}
+
+	if (strcmp(cmd, "chord") == 0) {
+		if (argc != 3) { usage(prog); goto done; }
+		int ch = parseChannel(argv[1], count);
+		if (ch < 0) goto done;
+		bool enable = (strcasecmp(argv[2], "on") == 0 ||
+		               strcasecmp(argv[2], "1") == 0 ||
+		               strcasecmp(argv[2], "true") == 0);
+		UInt16 flags = channels[ch].diagnosticFlags;
+		if (enable)
+			flags |= (kVoodooHDADiagEnable | kVoodooHDADiagInjectChord);
+		else
+			flags &= ~kVoodooHDADiagInjectChord;
+		rc = setDiag(connect, (UInt8)ch, flags);
 		goto done;
 	}
 
@@ -492,6 +980,19 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "flags") == 0) {
 		for (size_t i = 0; i < sizeof(kFlags) / sizeof(kFlags[0]); i++)
 			printf("flag=%s mask=0x%04x\n", kFlags[i].name, kFlags[i].flag);
+		return 0;
+	}
+	if (strcmp(argv[1], "list-elds") == 0) {
+		for (size_t i = 0; i < sizeof(kEldPresets) / sizeof(kEldPresets[0]); i++) {
+			const EldPreset *p = &kEldPresets[i];
+			uint8_t blob[kVoodooHDADiagMaxELDLen];
+			int len = buildEldFromPreset(p, blob, sizeof(blob));
+			printf("preset=%s len=%d desc=\"%s\"", p->name, len, p->desc);
+			printf(" bytes=");
+			for (int j = 0; j < len; j++)
+				printf("%s%02x", j ? "," : "", blob[j]);
+			printf("\n");
+		}
 		return 0;
 	}
 

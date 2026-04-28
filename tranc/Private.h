@@ -310,7 +310,7 @@ typedef struct _Channel {
 	UInt16 diagnosticFlags;
 	bool diagnosticBufferPrimed;
 	UInt8 diagnosticReserved;
-	UInt32 diagnosticPhase[2];
+	UInt32 diagnosticPhase[8];
 	UInt32 diagnosticClipCalls;
 	UInt32 diagnosticMixToneFills;
 	UInt32 diagnosticDirectToneFills;
