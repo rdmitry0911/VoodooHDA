@@ -92,7 +92,10 @@ PY
 if [[ -n "$PRESETS_OVERRIDE" ]]; then
 	PRESETS=( $PRESETS_OVERRIDE )
 else
-	mapfile -t PRESETS < <("$VHDA" list-elds | awk -F'[= ]+' '{print $2}')
+	PRESETS=()
+	while IFS= read -r line; do
+		PRESETS+=( "$line" )
+	done < <("$VHDA" list-elds | awk -F'[= ]+' '{print $2}')
 fi
 
 echo "==> sweep channel=$CHANNEL duration=${DURATION}s presets=(${PRESETS[*]})"
