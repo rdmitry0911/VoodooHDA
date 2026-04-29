@@ -4308,11 +4308,18 @@ int VoodooHDADevice::pcmChannelSetup(Channel *channel)
 				channel->bit32 = 3;
 			else if (HDA_PARAM_SUPP_PCM_SIZE_RATE_20BIT(pcmcap))
 				channel->bit32 = 2;
-			/* ATI HDMI codecs are pass-through: force 24-bit so
-			 * AFMT_S32_LE enters formats[] and channelSetFormat
-			 * accepts 24-bit from performFormatChange. */
-			if (!channel->bit32 && assocs[channel->assocNum].digital >= 2)
-				channel->bit32 = 3;
+			/* No bit32 override here. A previous "ATI HDMI codecs are
+			 * pass-through, force 24-bit" quirk forced bit32=3 for any
+			 * digital >= 2 association even when the codec reported only
+			 * 16-bit support — that produced a SDFMT bits-per-sample of 24
+			 * while clipOutputSamples wrote 4-byte (32-bit) samples to the
+			 * DMA buffer.  The controller then read 3 bytes per sample with
+			 * 4-byte stride, sliding the misalignment by one byte every
+			 * sample and producing the uniform buzz Sergey reported on the
+			 * RS780/Park codec (PCM cap 0x00020070 = 16-bit only). Mirror
+			 * AppleGFXHDA: respect what the codec actually advertises. If
+			 * a codec is genuinely pass-through-capable past 16-bit, that
+			 * has to be expressed in its PCM cap — not faked here. */
 			if (!(funcGroup->audio.quirks & HDA_QUIRK_FORCESTEREO)) {
 				channel->formats[i++] = AFMT_S16_LE;
 				if (channel->bit32 == 4)
