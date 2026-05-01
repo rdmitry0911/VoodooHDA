@@ -1137,7 +1137,10 @@ IOReturn VoodooHDAEngine::performAudioEngineStop()
 
 //	logMsg("calling channelStop() for channel %d\n", getEngineId());
 	mDevice->channelStop(mChannel);
-	resetDiagnosticState();
+	/* Do NOT call resetDiagnosticState() here — it clobbers per-run counters
+	 * (clipCalls, eraseCalls, lastFirstFrame, …) before any post-mortem
+	 * `vhda_diag get all` can read them.  Reset on engine *start* is
+	 * sufficient: the next run begins with zeroed counters anyway. */
 
 	return kIOReturnSuccess;
 }
@@ -1399,7 +1402,10 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			setNumSampleFramesPerBuffer(mNumSampleFrames);
 			if (mDigitalStream)
 				mDigitalStream->resetPositionState();
-			resetDiagnosticState();
+			/* No resetDiagnosticState() here — preserve counters so the
+			 * post-stop `vhda_diag get all` can read what happened on the
+			 * last playback. resetDiagnosticState() is called from
+			 * performAudioEngineStart so each new run starts clean. */
 
 		logMsg("buffer size: %ld, channels: %d, bit depth: %d, # samp. frames: %ld\n", (long int)mBufferSize,
 				channels, newFormat->fBitDepth, (long int)mNumSampleFrames);
@@ -1415,7 +1421,6 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			}
 			if (mDigitalStream)
 				mDigitalStream->resetPositionState();
-			resetDiagnosticState();
 			/* Recalculate sample offsets for the new rate, as Apple does in
 			 * recalculateEnginesSampleOffset() / recalculateEnginesSampleLatency(). */
 			recalculateSampleOffsets(newSampleRate->whole);
