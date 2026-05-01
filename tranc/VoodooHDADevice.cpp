@@ -1486,11 +1486,6 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 		}
 
 	if ((action & 0xFF) == kVoodooHDAActionSetDiag) {
-#if !VOODOO_HDA_DEBUG_BUILD
-		*outSize = 0;
-		*outData = NULL;
-		return kIOReturnUnsupported;
-#else
 		UInt8 ch;
 		UInt16 flags;
 
@@ -1509,7 +1504,6 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 		*outData = NULL;
 
 		return result;
-#endif
 	}
 
 	if ((action & 0xFF) == kVoodooHDAActionSetDebug) {
@@ -1529,11 +1523,6 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 	}
 
 	if ((action & 0xFF) == kVoodooHDAActionGetDiagTelemetry) {
-#if !VOODOO_HDA_DEBUG_BUILD
-		*outSize = 0;
-		*outData = NULL;
-		return kIOReturnUnsupported;
-#else
 		UInt8 ch = ((action >> 8) & 0xFF);
 		if (!device->getDiagnosticTelemetry(ch, &device->mDiagTelemetry)) {
 			*outSize = 0;
@@ -1543,7 +1532,6 @@ IOReturn VoodooHDADevice::handleAction(OSObject *owner, void *arg0, void *arg1, 
 		*outSize = sizeof(device->mDiagTelemetry);
 		*outData = &device->mDiagTelemetry;
 		return result;
-#endif
 	}
 
 	if ((action & 0xFF) == kVoodooHDAActionDiagPCMTap) {
@@ -3767,11 +3755,6 @@ void VoodooHDADevice::setDebugLevel(UInt8 level)
 
 bool VoodooHDADevice::getDiagnosticTelemetry(UInt8 tabNum, VoodooHDADiagTelemetry *telemetry)
 {
-#if !VOODOO_HDA_DEBUG_BUILD
-	(void)tabNum;
-	(void)telemetry;
-	return false;
-#else
 	VoodooHDAEngine *engine;
 	Channel *channel;
 	PcmDevice *pcmDevice;
@@ -3854,7 +3837,6 @@ bool VoodooHDADevice::getDiagnosticTelemetry(UInt8 tabNum, VoodooHDADiagTelemetr
 	}
 
 	return true;
-#endif
 }
 
 void VoodooHDADevice::freePrefPanelMemoryBuf(void)
