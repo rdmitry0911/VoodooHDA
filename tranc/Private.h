@@ -328,6 +328,14 @@ typedef struct _Channel {
 	 * read; diagnosticPositionRejects counts the glitches caught. */
 	UInt32 lastReportedPosition;
 	UInt32 diagnosticPositionRejects;
+	/* Per-stream FIFO / Descriptor error counters.  Apple's
+	 * AppleGFXHDAController::handleStreamInterruptOnISR (decompile
+	 * @ 0xe106) accumulates SDSTS bits 3 (FIFOE) and 4 (DESE) into
+	 * controller-side per-stream arrays (+0x308 and +0x380) so the
+	 * engine can later report hardware faults.  We surface them in
+	 * the diag telemetry instead. */
+	UInt32 diagnosticFifoErrors;
+	UInt32 diagnosticDescriptorErrors;
 
 	UInt16 slack;
 	DmaMemory *bdlMem;

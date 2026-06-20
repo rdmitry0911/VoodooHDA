@@ -293,6 +293,8 @@ void VoodooHDAEngine::resetDiagnosticState()
 	mChannel->diagnosticLastNumFrames = 0;
 	mChannel->lastReportedPosition = 0;
 	mChannel->diagnosticPositionRejects = 0;
+	mChannel->diagnosticFifoErrors = 0;
+	mChannel->diagnosticDescriptorErrors = 0;
 }
 
 float VoodooHDAEngine::nextDiagnosticSample(UInt32 channelIndex)
@@ -1138,7 +1140,13 @@ IOReturn VoodooHDAEngine::performAudioEngineStop()
 //	logMsg("VoodooHDAEngine[%p]::performAudioEngineStop\n", this);
 
 //	logMsg("calling channelStop() for channel %d\n", getEngineId());
-	mDevice->channelStop(mChannel);
+	/* Apple's AppleGFXHDAEngine::performAudioEngineStop (decompile
+	 * @ 0x1e7e6) gates the stopDMAEngine call on the per-engine
+	 * "was-running" flag (this->[0x2d] & 1).  Calling stopDMAEngine
+	 * on an already-stopped engine just triggers extra register
+	 * touches on a no-op path.  Mirror that with HDAC_CHN_RUNNING. */
+	if (mChannel && (mChannel->flags & HDAC_CHN_RUNNING))
+		mDevice->channelStop(mChannel);
 	/* Do NOT call resetDiagnosticState() here — it clobbers per-run counters
 	 * (clipCalls, eraseCalls, lastFirstFrame, …) before any post-mortem
 	 * `vhda_diag get all` can read them.  Reset on engine *start* is

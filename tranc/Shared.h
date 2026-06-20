@@ -130,7 +130,11 @@ typedef struct _ChannelInfo {
 
 enum {
 	kVoodooHDADiagTelemetryMagic = 0x56484441U, /* VHDA */
-	kVoodooHDADiagTelemetryVersion = 1
+	/* v2: appended diagnosticPositionRejects (from commit 80eed10),
+	 * diagnosticFifoErrors, diagnosticDescriptorErrors at end of struct.
+	 * v1 readers see the same prefix; size field tells them where v2
+	 * ends so they can ignore the tail. */
+	kVoodooHDADiagTelemetryVersion = 2
 };
 
 typedef struct _VoodooHDADiagTelemetry {
@@ -175,6 +179,10 @@ typedef struct _VoodooHDADiagTelemetry {
 	UInt32 pinNid;
 	UInt32 cad;
 	char channelName[MAX_SLIDER_TAB_NAME_LENGTH];
+	/* v2 fields (appended; v1 readers parse the prefix correctly) */
+	UInt32 diagnosticPositionRejects;
+	UInt32 diagnosticFifoErrors;
+	UInt32 diagnosticDescriptorErrors;
 } VoodooHDADiagTelemetry;
 
 /* === Diag-mode shared structures =========================================

@@ -2484,6 +2484,16 @@ int VoodooHDADevice::handleStreamInterrupt(Channel *channel)
 	/* XXX to be removed */
 	res = readData8(channel->off + HDAC_SDSTS);
 
+	/* D19: count FIFO and Descriptor errors per-stream so the diag
+	 * telemetry can surface them without depending on log scraping.
+	 * Mirrors AppleGFXHDAController::handleStreamInterruptOnISR which
+	 * tracks these into per-stream arrays at controller +0x308 /
+	 * +0x380 for engine-side fault diagnosis. */
+	if (res & HDAC_SDSTS_FIFOE)
+		channel->diagnosticFifoErrors++;
+	if (res & HDAC_SDSTS_DESE)
+		channel->diagnosticDescriptorErrors++;
+
 	/* AMD/ATI GPU HDA spuriously asserts FIFOE during normal HDMI playback;
 	 * only log descriptor errors (DESE) for AMD, log both for Intel. */
 	if (res & HDAC_SDSTS_DESE)
@@ -3369,6 +3379,14 @@ void VoodooHDADevice::streamStart(Channel *channel)
 
 	channel->flags |= HDAC_CHN_RUNNING;
 
+	/* Apple's AppleGFXHDAController::startStream (decompile @ 0xd5d8)
+	 * writes 1<<streamId to INTSTS just before issuing RUN, clearing
+	 * any leftover pending interrupt from a prior run.  Without this
+	 * a stale BCIS triggers a spurious immediate interrupt at start
+	 * and the engine's first BCIS-handler runs before RUN has
+	 * actually advanced the buffer. */
+	writeData32(HDAC_INTSTS, 1u << channel->streamId);
+
 	ctl = readData32(HDAC_INTCTL);
 	ctl |= 1 << (channel->off >> 5);
 	writeData32(HDAC_INTCTL, ctl);
@@ -3396,9 +3414,13 @@ void VoodooHDADevice::streamReset(Channel *channel)
 	int to = timeout;
 	UInt32 ctl;
 
-	ctl = readData8(channel->off + HDAC_SDCTL0);
-	ctl |= HDAC_SDCTL_SRST;
-	writeData8(channel->off + HDAC_SDCTL0, ctl);
+	/* Apple's AppleGFXHDAController::resetStreamForOffset (decompile
+	 * @ 0xd4c0) writes the *entire* SDCTL with only SRST set —
+	 * clearing RUN, IOCE, DEIE, FEIE in one bus transaction.  Per
+	 * HDA 1.0a these bits MUST be 0 when SRST is asserted; relying
+	 * on a prior stopStreamRegisters call to clear them is one
+	 * race-prone step more than necessary. */
+	writeData32(channel->off + HDAC_SDCTL0, HDAC_SDCTL_SRST);
 	do {
 		ctl = readData8(channel->off + HDAC_SDCTL0);
 		if (ctl & HDAC_SDCTL_SRST)
@@ -3407,8 +3429,7 @@ void VoodooHDADevice::streamReset(Channel *channel)
 	} while (--to);
 	if (!(ctl & HDAC_SDCTL_SRST))
 		errorMsg("timeout in reset\n");
-	ctl &= ~HDAC_SDCTL_SRST;
-	writeData8(channel->off + HDAC_SDCTL0, ctl);
+	writeData32(channel->off + HDAC_SDCTL0, 0);
 	to = timeout;
 	do {
 		ctl = readData8(channel->off + HDAC_SDCTL0);
@@ -3852,6 +3873,9 @@ bool VoodooHDADevice::getDiagnosticTelemetry(UInt8 tabNum, VoodooHDADiagTelemetr
 	telemetry->diagnosticEraseSkips = channel->diagnosticEraseSkips;
 	telemetry->diagnosticLastFirstFrame = channel->diagnosticLastFirstFrame;
 	telemetry->diagnosticLastNumFrames = channel->diagnosticLastNumFrames;
+	telemetry->diagnosticPositionRejects = channel->diagnosticPositionRejects;
+	telemetry->diagnosticFifoErrors = channel->diagnosticFifoErrors;
+	telemetry->diagnosticDescriptorErrors = channel->diagnosticDescriptorErrors;
 
 	if (engine->mPortName)
 		strlcpy(telemetry->channelName, engine->mPortName, sizeof(telemetry->channelName));

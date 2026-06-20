@@ -380,6 +380,11 @@ static void printTelemetry(const VoodooHDADiagTelemetry *t)
 	    t->diagnosticDirectToneFills, t->diagnosticEraseCalls,
 	    t->diagnosticEraseSkips, t->diagnosticBufferPrimed,
 	    t->diagnosticLastFirstFrame, t->diagnosticLastNumFrames);
+	if (t->version >= 2) {
+		printf("  hwfaults posReject=%u fifoErr=%u descErr=%u\n",
+		    t->diagnosticPositionRejects, t->diagnosticFifoErrors,
+		    t->diagnosticDescriptorErrors);
+	}
 }
 
 static int setDiag(io_connect_t connect, UInt8 channel, UInt16 flags)

@@ -610,6 +610,14 @@ void VoodooGFXHDAController::startStreamRegisters(Channel *channel)
 
 	channel->flags |= HDAC_CHN_RUNNING;
 
+	/* Apple's AppleGFXHDAController::startStream (decompile @ 0xd5d8)
+	 * writes 1<<streamId to INTSTS just before issuing RUN, clearing
+	 * any leftover pending interrupt from a prior run.  Without this
+	 * a stale BCIS triggers a spurious immediate interrupt at start
+	 * and the engine's first BCIS-handler runs before RUN has
+	 * actually advanced the buffer. */
+	mDevice->writeData32(HDAC_INTSTS, 1u << channel->streamId);
+
 	/* Apple's AppleGFXHDAController::startStream() opens with a
 	 * drain-the-stopping-state poll (up to 10 ms of 1 µs IODelays)
 	 * before issuing a new RUN.  Our prepareStreamDMA() already runs
@@ -660,9 +668,13 @@ void VoodooGFXHDAController::resetStreamRegisters(Channel *channel)
 	int to = timeout;
 	UInt32 ctl;
 
-	ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
-	ctl |= HDAC_SDCTL_SRST;
-	mDevice->writeData8(channel->off + HDAC_SDCTL0, ctl);
+	/* Apple's AppleGFXHDAController::resetStreamForOffset (decompile
+	 * @ 0xd4c0) writes the *entire* SDCTL with only SRST set —
+	 * clearing RUN, IOCE, DEIE, FEIE in one bus transaction.  Per
+	 * HDA 1.0a these bits MUST be 0 when SRST is asserted; relying
+	 * on a prior stopStreamRegisters call to clear them is one
+	 * race-prone step more than necessary. */
+	mDevice->writeData32(channel->off + HDAC_SDCTL0, HDAC_SDCTL_SRST);
 	do {
 		ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
 		if (ctl & HDAC_SDCTL_SRST)
@@ -671,8 +683,7 @@ void VoodooGFXHDAController::resetStreamRegisters(Channel *channel)
 	} while (--to);
 	if (!(ctl & HDAC_SDCTL_SRST))
 		mDevice->errorMsg("timeout in HDMI/DP reset\n");
-	ctl &= ~HDAC_SDCTL_SRST;
-	mDevice->writeData8(channel->off + HDAC_SDCTL0, ctl);
+	mDevice->writeData32(channel->off + HDAC_SDCTL0, 0);
 	to = timeout;
 	do {
 		ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
