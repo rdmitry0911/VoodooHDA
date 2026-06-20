@@ -16,17 +16,55 @@ TARGET_ADDRS = ["00003284", "00003334", "000033e6", "000078a0", "00008d30", "000
 
 # Functions we want to know the offsets inside
 CALLER_FUNCS = [
-    "AppleGFXHDAController::startStream",        # 0xd5d8
-    "AppleGFXHDAController::stopStream",         # 0xd816
-    "AppleGFXHDAController::stopStreamWithOffset", # 0xd980
-    "AppleGFXHDAController::programStream",      # 0xda0c
+    # Controller stream lifecycle
+    "AppleGFXHDAController::startStream",
+    "AppleGFXHDAController::stopStream",
+    "AppleGFXHDAController::stopStreamWithOffset",
+    "AppleGFXHDAController::programStream",
+    "AppleGFXHDAController::resetStream",
+    "AppleGFXHDAController::resetStreamForOffset",
     "AppleGFXHDAController::enableStreamInterrupt",
     "AppleGFXHDAController::disableStreamInterrupt",
+    "AppleGFXHDAController::validateBDLEntries",
+    "AppleGFXHDAController::checkStreamErrorState",
     "AppleGFXHDAController::handleStreamInterruptOnISR",
-    "AppleGFXHDAEngine::startDMAEngine",
-    "AppleGFXHDAEngine::stopDMAEngine",
+    "AppleGFXHDAController::handleStreamInterruptOnWorkLoop",
+    "AppleGFXHDAController::handleControllerInterruptOnISR",
+    "AppleGFXHDAController::handleControllerInterruptOnWorkLoop",
+    "AppleGFXHDAController::probeStreamCapabilities",
+    "AppleGFXHDAController::setupVariableStreamLatency",
+    "AppleGFXHDAController::dmaIsRunning",
+    "AppleGFXHDAController::allocateAudioStream",
+    "AppleGFXHDAController::allocateStreamMemory",
+    "AppleGFXHDAController::deallocateLinkStream",
+    # Bus stall (D8 territory)
+    "AppleGFXHDAController::enableMaxBusStall",
+    "AppleGFXHDAController::disableMaxBusStall",
+    "AppleGFXHDAController::setRequireMaxBusStall",
+    # Engine lifecycle
     "AppleGFXHDAEngine::performAudioEngineStart",
     "AppleGFXHDAEngine::performAudioEngineStop",
+    "AppleGFXHDAEngine::performFormatChange",
+    "AppleGFXHDAEngine::startDMAEngine",
+    "AppleGFXHDAEngine::stopDMAEngine",
+    "AppleGFXHDAEngine::stopHardware",
+    "AppleGFXHDAEngine::controllerForcedPause",
+    "AppleGFXHDAEngine::handlePowerStateChange",
+    "AppleGFXHDAEngine::setPowerStateToActive",
+    "AppleGFXHDAEngine::setPowerStateToIdle",
+    "AppleGFXHDAEngine::setPowerStateToSleep",
+    # Engine sample-domain
+    "AppleGFXHDAEngine::getCurrentSampleFrame",
+    "AppleGFXHDAEngine::getCurrentSamplePosFromSource",
+    "AppleGFXHDAEngine::clipOutputSamples",
+    "AppleGFXHDAEngine::eraseOutputSamples",
+    "AppleGFXHDAEngine::resetClipPosition",
+    "AppleGFXHDAEngine::convertInputSamples",
+    "AppleGFXHDAEngine::takeTimeStamp",
+    "AppleGFXHDAEngine::setEngineSampleLatency",
+    "AppleGFXHDAEngine::recalculateEnginesSampleLatency",
+    "AppleGFXHDAEngine::recalculateEnginesSampleOffset",
+    "AppleGFXHDAEngine::streamFormatChanged",
 ]
 
 out = open("/tmp/apple_call_offsets.txt", "w")
