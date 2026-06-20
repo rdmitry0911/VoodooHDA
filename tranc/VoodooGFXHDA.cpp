@@ -593,6 +593,27 @@ void VoodooGFXHDAController::startStreamRegisters(Channel *channel)
 
 	channel->flags |= HDAC_CHN_RUNNING;
 
+	/* Apple's AppleGFXHDAController::startStream() opens with a
+	 * drain-the-stopping-state poll (up to 10 ms of 1 µs IODelays)
+	 * before issuing a new RUN.  Our prepareStreamDMA() already runs
+	 * stopStreamRegisters + a full SRST set/ack/clear/ack cycle, so on
+	 * the normal path RUN is guaranteed to be 0 by the time we get
+	 * here.  Verify it cheaply anyway: an unexpected residual RUN bit
+	 * means the previous run never fully drained, and ORing the new
+	 * config on top of it would produce undefined timing on the next
+	 * BCIS.  Mirror Apple's defensive wait. */
+	{
+		int waitUs = 1000;
+		while (waitUs-- > 0) {
+			if ((mDevice->readData8(channel->off + HDAC_SDCTL0) & HDAC_SDCTL_RUN) == 0)
+				break;
+			IODelay(1);
+		}
+		if (waitUs <= 0)
+			mDevice->errorMsg("startStreamRegisters: RUN bit still set after 1ms drain (stream off=0x%x)\n",
+					  channel->off);
+	}
+
 	ctl = mDevice->readData32(HDAC_INTCTL);
 	ctl |= 1 << (channel->off >> 5);
 	mDevice->writeData32(HDAC_INTCTL, ctl);
@@ -605,7 +626,13 @@ void VoodooGFXHDAController::startStreamRegisters(Channel *channel)
 		mDevice->writeData8(channel->off + HDAC_SDCTL2, ctl);
 	}
 
+	/* Mirror mald0n's clear-before-set pattern: explicitly zero the
+	 * RUN + interrupt-enable bits in the local copy before OR-ing in
+	 * the new value, so an unexpected residual bit can't survive into
+	 * the write-back.  FEIE (FIFO Error Interrupt Enable) is kept on
+	 * — we want FIFO underruns to be loggable, not silently ignored. */
 	ctl = mDevice->readData8(channel->off + HDAC_SDCTL0);
+	ctl &= ~(HDAC_SDCTL_IOCE | HDAC_SDCTL_FEIE | HDAC_SDCTL_DEIE | HDAC_SDCTL_RUN);
 	ctl |= HDAC_SDCTL_IOCE | HDAC_SDCTL_FEIE | HDAC_SDCTL_DEIE | HDAC_SDCTL_RUN;
 	mDevice->writeData8(channel->off + HDAC_SDCTL0, ctl);
 }

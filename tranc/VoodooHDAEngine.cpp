@@ -1398,7 +1398,22 @@ IOReturn VoodooHDAEngine::performFormatChange(IOAudioStream *audioStream,
 			ASSERT(mBufferSize);
 			mSampleSize = channels * (newFormat->fBitWidth / 8);
 			mNumSampleFrames = mBufferSize / mSampleSize;
-			mChannel->slack = static_cast<UInt16>(mBufferSize - mNumSampleFrames * mSampleSize);
+			/* Apple's AppleGFXHDAController::validateBDLEntries() is a no-op
+			 * — the native driver guarantees all BDL descriptors are the same
+			 * size by construction. For the GPU/HDMI digital path we follow
+			 * the same invariant: any leftover bytes that wouldn't fit a
+			 * full frame are dropped (slack = 0), so every descriptor —
+			 * including the last — has length == blockSize. A short trailing
+			 * descriptor caused the SDCBL total to be (blockSize*numBlocks
+			 * - slack), which on AMD Polaris HDMI is reported to produce
+			 * periodic glitches at every buffer wrap.  Analog/HDA path is
+			 * untouched: the legacy mixer there has always tolerated and
+			 * relied on the slack accounting. */
+			if (mDigitalStream) {
+				mChannel->slack = 0;
+			} else {
+				mChannel->slack = static_cast<UInt16>(mBufferSize - mNumSampleFrames * mSampleSize);
+			}
 			setNumSampleFramesPerBuffer(mNumSampleFrames);
 			if (mDigitalStream)
 				mDigitalStream->resetPositionState();
