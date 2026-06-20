@@ -291,6 +291,8 @@ void VoodooHDAEngine::resetDiagnosticState()
 	mChannel->diagnosticEraseSkips = 0;
 	mChannel->diagnosticLastFirstFrame = 0;
 	mChannel->diagnosticLastNumFrames = 0;
+	mChannel->lastReportedPosition = 0;
+	mChannel->diagnosticPositionRejects = 0;
 }
 
 float VoodooHDAEngine::nextDiagnosticSample(UInt32 channelIndex)

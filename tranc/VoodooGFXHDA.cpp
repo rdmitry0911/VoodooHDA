@@ -301,6 +301,15 @@ UInt32 VoodooGFXHDAController::getLinkPosition(Channel *channel, bool *valid)
 
 	if (position >= bufferBytes)
 		return 0;
+
+	/* Mirrors AppleGFXHDAEngine::getCurrentSamplePosFromSource — drop
+	 * SDLPIB readings that go backward in a way that doesn't match a
+	 * real buffer wrap.  Without this, a Polaris-class glitch advances
+	 * IOAudio's consumer estimate past the actual play head and the
+	 * subsequent eraseOutputSamples zeros data the hardware is still
+	 * about to read → periodic crackle on every wrap. */
+	position = voodooHDAGuardPosition(channel, position, bufferBytes);
+
 	if (valid)
 		*valid = true;
 
@@ -569,6 +578,14 @@ void VoodooGFXHDAController::setupBdl(Channel *channel)
 		addr = mDevice->mDmaPosMem->physAddr;
 		mDevice->writeData32(HDAC_DPIBLBASE, ((UInt32)addr & HDAC_DPLBASE_DPLBASE_MASK) | 0x00000001);
 		mDevice->writeData32(HDAC_DPIBUBASE, (UInt32)(addr >> 32));
+		/* Apple's programStream issues a brief settle wait (3-iteration
+		 * status poll) after enabling DPIB so the controller's first
+		 * shared-memory write lands before any read.  Without it a
+		 * cold-start DPIB read can return stale 0 and confuse the
+		 * engine's initial position seed.  30 µs covers Park/RS780
+		 * comfortably; this only runs on the very first DPIB enable
+		 * (the check above ensures we don't re-enable). */
+		IODelay(30);
 	}
 }
 
@@ -675,4 +692,14 @@ void VoodooGFXHDAController::setStreamId(Channel *channel)
 	ctl &= ~(HDAC_SDCTL2_STRM_MASK | HDAC_SDCTL2_STRIPE_MASK);
 	ctl |= channel->streamId << HDAC_SDCTL2_STRM_SHIFT;
 	mDevice->writeData8(channel->off + HDAC_SDCTL2, ctl);
+
+	/* Mirrors AppleGFXHDAController::programStream — verify the
+	 * stream-tag bits landed.  A wrong tag means the codec ignores
+	 * our BDL. */
+	{
+		UInt8 rb = mDevice->readData8(channel->off + HDAC_SDCTL2);
+		if ((rb ^ ctl) & HDAC_SDCTL2_STRM_MASK)
+			mDevice->errorMsg("SDCTL2 stream-tag readback mismatch on streamOff=0x%x: wrote=0x%02x read=0x%02x\n",
+					  channel->off, ctl, rb);
+	}
 }

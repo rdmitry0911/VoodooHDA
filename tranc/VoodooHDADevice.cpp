@@ -3117,6 +3117,7 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 int VoodooHDADevice::channelGetPosition(Channel *channel)
 {
 	UInt32 position;
+	UInt32 bufferBytes;
 
 	LOCK();
 
@@ -3128,13 +3129,22 @@ int VoodooHDADevice::channelGetPosition(Channel *channel)
 	UNLOCK();
 
 	/* Round to available space and force 128 bytes aligment. */
-	position %= (channel->blockSize * channel->numBlocks - channel->slack);
+	bufferBytes = channel->blockSize * channel->numBlocks - channel->slack;
+	if (bufferBytes == 0)
+		return 0;
+	position %= bufferBytes;
 #if 0
 	/* Since mSampleSize may be non-power of 2 */
 	position &= HDA_BLK_ALIGN;
 #endif
 
-	return position;
+	/* Mirrors AppleGFXHDAEngine::getCurrentSamplePosFromSource — reject
+	 * SDLPIB/DPIB readings that go backward in a way inconsistent with
+	 * a real buffer wrap.  Without this, a Polaris-class glitch is
+	 * misread by IOAudio as a wrap, advancing the consumer estimate
+	 * past the actual play head, after which eraseOutputSamples zeros
+	 * data the hardware is about to read → crackle. */
+	return voodooHDAGuardPosition(channel, position, bufferBytes);
 }
 
 static
@@ -3256,7 +3266,22 @@ void VoodooHDADevice::streamSetup(Channel *channel)
 		digFormat |= HDA_CMD_SET_DIGITAL_CONV_FMT1_COPY;
 
 	writeData16(channel->off + HDAC_SDFMT, format);
-    
+
+	/* Mirrors AppleGFXHDAController::programStream — read SDFMT back
+	 * and verify bits [14:0] match what we wrote.  On AMD/ATI HDMI
+	 * the codec link can silently reject a malformed format (wrong
+	 * channel count, unsupported bit-depth) leaving the previous
+	 * SDFMT value in place, which would then play as buzz at the
+	 * previous sample rate.  Logging only — we don't fail the start
+	 * yet, to preserve compatibility with controllers that have
+	 * known SDFMT quirks. */
+	{
+		UInt16 fmtReadBack = readData16(channel->off + HDAC_SDFMT);
+		if ((fmtReadBack ^ static_cast<UInt16>(format)) & 0x7f7f)
+			errorMsg("SDFMT readback mismatch on streamOff=0x%x: wrote=0x%04x read=0x%04x\n",
+				 channel->off, static_cast<UInt16>(format), fmtReadBack);
+	}
+
 	/* AppleGFXHDA never uses stripe mode for HDMI audio.  Stripe causes
 	 * FIFO errors (SDSTS_FIFOE) on AMD/ATI GPU HDA controllers, producing
 	 * distorted / crackling audio.  Disable stripe for digital (HDMI/DP)
@@ -3403,6 +3428,16 @@ void VoodooHDADevice::streamSetId(Channel *channel)
 	ctl &= ~(HDAC_SDCTL2_STRM_MASK | HDAC_SDCTL2_STRIPE_MASK);
 	ctl |= channel->streamId << HDAC_SDCTL2_STRM_SHIFT;
 	writeData8(channel->off + HDAC_SDCTL2, ctl);
+
+	/* Mirrors AppleGFXHDAController::programStream — read SDCTL2 back
+	 * and verify the stream-tag bits we just wrote landed.  A wrong
+	 * stream tag means the codec ignores our BDL completely. */
+	{
+		UInt8 rb = readData8(channel->off + HDAC_SDCTL2);
+		if ((rb ^ ctl) & HDAC_SDCTL2_STRM_MASK)
+			errorMsg("SDCTL2 stream-tag readback mismatch on streamOff=0x%x: wrote=0x%02x read=0x%02x\n",
+				 channel->off, ctl, rb);
+	}
 }
 
 /*******************************************************************************************/
@@ -3439,6 +3474,14 @@ void VoodooHDADevice::bdlSetup(Channel *channel)
 		addr = mDmaPosMem->physAddr;
 		writeData32(HDAC_DPIBLBASE, ((UInt32) addr & HDAC_DPLBASE_DPLBASE_MASK) | 0x00000001);
 		writeData32(HDAC_DPIBUBASE, (UInt32) (addr >> 32));
+		/* Apple's programStream issues a brief settle wait (3-iteration
+		 * status poll) after enabling DPIB so the controller's first
+		 * shared-memory write lands before any read.  Without it a
+		 * cold-start DPIB read can return stale 0 and confuse the
+		 * engine's initial position seed.  30 µs covers Park/RS780
+		 * comfortably; this only runs on the very first DPIB enable
+		 * (the check above ensures we don't re-enable). */
+		IODelay(30);
 	}
 }
 

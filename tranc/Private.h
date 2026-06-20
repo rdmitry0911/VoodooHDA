@@ -318,7 +318,17 @@ typedef struct _Channel {
 	UInt32 diagnosticEraseSkips;
 	UInt32 diagnosticLastFirstFrame;
 	UInt32 diagnosticLastNumFrames;
-	
+	/* Position-tracking monotonicity guard (Apple AppleGFXHDA
+	 * getCurrentSamplePosFromSource semantics): SDLPIB is documented to
+	 * briefly glitch backward on AMD Polaris.  An uncorrected glitch
+	 * gets interpreted by IOAudio as a wrap event, advancing the
+	 * consumer estimate by ~one buffer beyond reality, after which
+	 * eraseOutputSamples writes zeros into data the hardware has not
+	 * yet read → crackle.  lastReportedPosition holds the last accepted
+	 * read; diagnosticPositionRejects counts the glitches caught. */
+	UInt32 lastReportedPosition;
+	UInt32 diagnosticPositionRejects;
+
 	UInt16 slack;
 	DmaMemory *bdlMem;
 	DmaMemory *buffer;
@@ -351,6 +361,47 @@ typedef struct _Codec {
 /* ATI HDMI codec: vendor ID 0x1002 (all known ATI/AMD HDMI codec IDs) */
 static inline bool isAtiHdmiCodec(Codec *codec) {
 	return codec->vendorId == 0x1002;
+}
+
+/*
+ * Position-tracking monotonicity guard.  Apple's
+ * AppleGFXHDAEngine::getCurrentSamplePosFromSource (decompile @ 0x1e6ec)
+ * compares each new SDLPIB/DPIB read against the engine's last known
+ * monotonic frame position and rejects backward movement outright.
+ *
+ * We work in the byte-position-within-buffer domain (not Apple's
+ * monotonic-frames domain), so backward movement is a *legitimate*
+ * event when the buffer wraps from near `bufferBytes - 1` back to
+ * near 0.  Distinguish wrap from glitch by shape: a wrap means
+ * `last` was near the end of the buffer AND `raw` is near the start;
+ * anything else is a glitch from stale MMIO and we hold the prior
+ * value rather than report it forward.
+ *
+ * Tolerance is bufferBytes/8 on each side: enough to absorb normal
+ * poll-rate jitter (IOAudio typically polls every ~1 ms vs. wrap
+ * every ~21 ms on 48 kHz/1024-frame buffers) without misclassifying.
+ *
+ * Caller passes `bufferBytes` separately because in our codebase that
+ * value is computed two different ways depending on the path:
+ * `blockSize * numBlocks` on the GFX controller (slack == 0 since
+ * the digital-path fix in 472288c), and `blockSize * numBlocks -
+ * slack` on the legacy controller for analog streams.
+ */
+static inline UInt32 voodooHDAGuardPosition(Channel *channel, UInt32 raw, UInt32 bufferBytes)
+{
+	if (!channel || bufferBytes == 0)
+		return raw;
+	UInt32 last = channel->lastReportedPosition;
+	if (raw < last) {
+		bool looksLikeWrap = (last > bufferBytes - bufferBytes / 8) &&
+				     (raw < bufferBytes / 8);
+		if (!looksLikeWrap) {
+			channel->diagnosticPositionRejects++;
+			return last;
+		}
+	}
+	channel->lastReportedPosition = raw;
+	return raw;
 }
 
 /*
