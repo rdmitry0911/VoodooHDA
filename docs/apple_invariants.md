@@ -227,13 +227,13 @@ LAB_RUN:
 
 - **4.1**: We bring the controller out of reset at device probe, not
   lazily per-stream. Same effect, different timing — OK.
-- **4.2 + 4.3**: **MISSING.** We do not have a drain-stopping gate at
-  the start of `startStreamRegisters`. Our `commit 472288c` added a
-  1 ms RUN-bit poll as belt-and-suspenders, but Apple's gate is on
-  the controller-wide status flag, not per-stream RUN. The functional
-  difference: ours catches an unfinished hardware stop on this stream;
-  Apple's catches an unfinished hardware stop globally (e.g., still
-  draining FIFOs).
+- **4.2 + 4.3**: **CLOSED by `commit 472288c`.** Initially we thought
+  Apple's gate was a controller-wide status bit and ours (per-stream
+  RUN) might be functionally narrower. The disassembly resolution
+  in §12-Q1 shows Apple's gate also reads per-stream `SDCTL.RUN`
+  (offset `stream_off + 0x80`, mask `0x2`), with the only meaningful
+  difference being that Apple gates the poll on a software state-
+  machine check (`state == STOPPING`). Functionally equivalent.
 - **4.4**: Our `channelStart` flow is
   `prepareStreamDMA → streamSetup → startStreamRegisters → updateTiming`.
   `prepareStreamDMA` does stop+SRST+bzero+setupBdl+setStreamId in one
@@ -326,17 +326,16 @@ LAB_OK:
 
 ### Our 3.3.5 deviations from §5
 
-- **5.1 + 5.2**: **MISSING read-back verification.** Our `setStreamId`
-  (VoodooGFXHDA.cpp:643) writes SDCTL2 but doesn't read back. Our
-  `channelSetFormat` writes SDFMT but doesn't read back. On AMD
-  Polaris, where the SDFMT can be silently rejected due to
-  bit-depth/channel-count mismatch, this would catch the bug at
-  program time instead of producing crackle/buzz at playback time.
+- **5.1 + 5.2**: **CLOSED by `commit 80eed10`.** Read-back verification
+  added in `channelSetFormat`, `streamSetId` (legacy), and `setStreamId`
+  (GFX), each masked to the spec-significant bits (`0x7f7f` for SDFMT,
+  `STRM_MASK` for SDCTL2 stream tag). Log-only, not fail-on-mismatch —
+  see commit message rationale for why we don't bail like Apple does.
 - **5.3**: We program BDL in `setupBdl` directly on the controller
   with no per-stream object. Functional equivalent.
-- **5.4**: We unconditionally enable DPIB and never wait. If our
-  dmaPos read returns 0 we fall back to SDLPIB. This is one source
-  of "phantom 0-position" artifacts at start.
+- **5.4**: **CLOSED by `commit 80eed10`.** Added `IODelay(30)` after
+  enabling DPIB in both the legacy (`bdlSetup`) and GFX (`setupBdl`)
+  paths to settle Apple's "DPIB warm-up" window before any read.
 - **5.5**: We use `channelGetPosition` which always re-reads SDLPIB;
   no cached translation table. Slightly slower in the ISR but
   correct.
@@ -436,20 +435,23 @@ IOReturn getCurrentSamplePosFromSource(ControllerLinkPosSource src, u64 *outFram
   `channelGetPosition` (`VoodooHDADevice.cpp:3131`) — same byte
   domain, but DOES NOT convert to frames. Conversion happens in
   IOAudio. Compatible.
-- **8.2**: **MISSING.** We have no monotonicity guard. If SDLPIB
-  briefly glitches backwards (Polaris is known to), our reported
-  position will too, and IOAudio's clip-erase math will compute the
-  erase region from the new (smaller) position → erase data the
-  hardware is *about to play* → crackle.
-- **8.3**: We try `channel->dmaPos` first, fall back to SDLPIB. ✓
-  But we don't have Apple's "DPIB warm-up wait" from §5.4, so a
-  cold-start DPIB read can return 0 and confuse the engine.
+- **8.2**: **CLOSED by `commit 80eed10`.** `voodooHDAGuardPosition()` in
+  `Private.h` distinguishes a legitimate buffer wrap (last near end,
+  raw near start, both within bufferBytes/8 tolerance) from a stale
+  backward MMIO read (everything else). Glitch reads hold the prior
+  position; a counter `Channel::diagnosticPositionRejects` records
+  the catch for telemetry.
+- **8.3**: **CLOSED by `commit 80eed10`** (DPIB warm-up wait, §5.4
+  above). We still try `dmaPos` first and fall back to SDLPIB.
 
-**This is the most likely structural cause of Сергей's crackle pattern.**
+**This was the most likely structural cause of Сергей's crackle pattern.**
 The "1s clean → crackle → 3–4 fading crackles" maps to: monotonic
 position for ~1 buffer wrap, then a backward SDLPIB read causes
 erase-into-future, the resulting click decays as the wrap consumes
-the erroneously-zeroed region over subsequent wraps.
+the erroneously-zeroed region over subsequent wraps. With the
+monotonicity guard in place the backward read is held instead of
+forwarded to IOAudio, and the erase region stays aligned to the
+real play head.
 
 ## 9. Timing and locking
 
@@ -473,10 +475,10 @@ the erroneously-zeroed region over subsequent wraps.
 
 | # | Deviation | Location | Severity | Notes |
 |---|---|---|---|---|
-| D1 | No SDLPIB monotonicity guard in `channelGetPosition` | `VoodooHDADevice.cpp:3117` | **High** | Most likely root cause of "crackle after wrap" on AMD HDMI |
-| D2 | No "DPIB warm-up wait" after programming dmaPos | `VoodooGFXHDA.cpp:setupBdl` | **High** | Cold-start can return 0 → start-of-stream glitch |
-| D3 | No drain-stopping gate at `startStream` entry | `VoodooGFXHDA.cpp::startStreamRegisters` | **Medium** | Already partially mitigated by `commit 472288c` (per-stream RUN poll) |
-| D4 | No SDFMT/SDCTL2 read-back verification in program path | `VoodooHDADevice.cpp::channelSetFormat`, `VoodooGFXHDA.cpp::setStreamId` | **Medium** | Silent format reject on AMD → wrong bit-depth playback |
+| D1 | No SDLPIB monotonicity guard in `channelGetPosition` | `VoodooHDADevice.cpp:3117` | **High** | **CLOSED** by `commit 80eed10`. Most likely root cause of "crackle after wrap" on AMD HDMI |
+| D2 | No "DPIB warm-up wait" after programming dmaPos | `VoodooGFXHDA.cpp:setupBdl` | **High** | **CLOSED** by `commit 80eed10`. Cold-start can return 0 → start-of-stream glitch |
+| D3 | No drain-stopping gate at `startStream` entry | `VoodooGFXHDA.cpp::startStreamRegisters` | **Medium** | **CLOSED** by `commit 472288c` (per-stream RUN poll, matches Apple per §12-Q1) |
+| D4 | No SDFMT/SDCTL2 read-back verification in program path | `VoodooHDADevice.cpp::channelSetFormat`, `VoodooGFXHDA.cpp::setStreamId` | **Medium** | **CLOSED** by `commit 80eed10`. Silent format reject on AMD → wrong bit-depth playback (log-only, no fail) |
 | D5 | RUN + interrupt enables collapsed into one SDCTL write | `VoodooGFXHDA.cpp:608-610` | **Low** | Atomic on x86; only diagnostic value to split |
 | D6 | No engine state machine; only `HDAC_CHN_RUNNING` bit | `Channel.flags` | **Low** | Structural cleanup; no current bug attributable to this |
 | D7 | No path-set abstraction | `Channel.pcmDevice` | **Low** | Fine for the configurations we support |
@@ -531,26 +533,10 @@ if (channel->dmaPos && !(read_DPIBLBASE() & 1)) {
 
 ### Commit C: drain-stopping gate (D3)
 
-In `VoodooGFXHDAController::startStreamRegisters`, replace the 1 ms
-per-stream RUN poll (added in `commit 472288c`) with the
-Apple-style controller-status drain:
-
-```c
-// Replace the 1ms RUN poll with a 10ms status-bit drain.
-// The controller status bit (specific bit TBD from FUN_000033e6 semantics)
-// covers all streams transitioning out of stopped.
-if (mDevice->controllerStoppingBitSet()) {
-    int n = 10000;
-    while (n-- > 0) {
-        if (!mDevice->controllerStoppingBitSet()) break;
-        IODelay(1);
-    }
-    if (n <= 0)
-        mDevice->errorMsg("startStream: controller drain timed out\n");
-}
-```
-
-(Requires identifying the specific bit; see open questions §12.)
+**Already in place via `commit 472288c`.** Apple's gate (per §12-Q1)
+is a per-stream `SDCTL.RUN` poll, not a controller-wide status bit
+as initially supposed. Our `commit 472288c` polls the same bit.
+No further code change required.
 
 ### Commit D: SDFMT/SDCTL2 read-back verification (D4)
 
@@ -567,29 +553,182 @@ if ((rb ^ fmt) & 0x7f7f) {
 
 Similar for SDCTL2 in `setStreamId`.
 
-## 12. Open questions
+## 12. Resolved open questions
 
-- **Q1**: What controller status bit does `FUN_000033e6 & 2` test in
-  Apple's drain-stopping gate? Likely HDAC_SDSTS_DESE or a controller-level
-  status; needs further investigation in the resolved decompile of
-  `stopStream` and `stopStreamWithOffset`.
-- **Q2**: What is the exact override of vtable+0xc70/+0xd90 in
-  `AppleGFXHDAEngineOutput` and `AppleGFXHDAEngineOutputDP` (the
-  post-start branches in §3)? Need to dump those subclass vtables
-  separately.
-- **Q3**: How does `AppleGFXHDAEngine::startDMAEngine` (vtable+0xc58)
-  actually program the per-stream registers? It delegates to a
-  child object via a vtable call — need to follow that call into
-  `IOGFXHDAStream` / `AppleGFXHDAStream`.
+All three open questions from the original draft were closed by
+disassembling the actual call-site context with `otool -tv` and
+cross-referencing the subclass vtable dumps for
+`AppleGFXHDAEngineOutput` and `AppleGFXHDAEngineOutputDP`.  The
+methodology is captured in `tools/ghidra/dump_call_offsets.py`,
+which extracts the MMIO offsets from the disassembly surrounding
+each call to a register-access wrapper.
 
-## 13. References
+### Q1 — what does the drain-stopping gate check?
+
+**Resolved.** The wrapper `FUN_000033e6` is a generic 32-bit MMIO
+read (it sits next to `FUN_00003284` = read8 and `FUN_00003334` =
+read16, all of which take their offset in `ESI` and dereference
+`controller->[0x88]` as the MMIO base). The offset passed in the
+gate's call site is `stream_off + 0x80` — that is, `SDCTL` of *this
+stream*. Bit 1 (mask `0x2`) of SDCTL is the `RUN` bit per HDA 1.0a.
+
+So Apple's gate is:
+
+```c
+if (stream->state == STATE_STOPPING && (read32(stream_off + 0x80) & RUN)) {
+    int n = 10000;
+    do {
+        if (!(read32(stream_off + 0x80) & RUN)) goto LAB_RUN;
+        IODelay(1);
+    } while (--n);
+    return kIOReturnTimeout;
+}
+```
+
+It is *not* a controller-wide flush bit — it is per-stream RUN, gated
+on a software state-machine check. The check fires only when
+*this* stream's previous teardown hasn't fully drained.
+
+**Implication for our patch**: `commit 472288c`'s unconditional 1 ms
+RUN-bit poll at the top of `startStreamRegisters` is structurally
+equivalent (it covers the same race), with two differences:
+
+  - Apple gates the poll on the software state-machine being in
+    `STATE_STOPPING`; we have no state machine and always poll. The
+    extra ~1 µs of work in the happy path is negligible.
+  - Apple polls for up to 10 ms; we poll for up to 1 ms. Both are
+    longer than any realistic per-stream drain on x86 HDA hardware.
+
+D3 stays "closed by 472288c" with no further code change required.
+
+### Q2 — what do the post-`takeTimeStamp` branches do for output?
+
+**Resolved.** Both leaf-class overrides of the two pure-virtual
+slots at `vtable+0xc70` and `vtable+0xd90` are trivial. The
+disassembly of each (entry points in the .text section):
+
+```
+LAB_00029ca8 (AppleGFXHDAEngineOutput::vtable+0xc70):
+    pushq %rbp
+    movq  %rsp, %rbp
+    movb  $0x1, %al           ; return true
+    popq  %rbp
+    retq
+
+LAB_00029c8a (AppleGFXHDAEngineOutput::vtable+0xd90):
+    pushq %rbp
+    movq  %rsp, %rbp
+    movl  $0xe00002bc, %eax    ; return kIOReturnNotAttached
+    popq  %rbp
+    retq
+```
+
+The first slot is "post-start check"; it always reports success. The
+second slot ("deferred-work helper") returns `kIOReturnNotAttached`,
+indicating that the leaf class does not participate in deferred
+post-start work.
+
+**Implication for our patch**: `performAudioEngineStart` on output
+engines ends immediately after `takeTimeStamp()` — there is no
+output-specific deferred work to mirror. Our existing
+`VoodooHDAEngine::performAudioEngineStart` already terminates after
+`takeTimeStamp(false)`, which matches Apple's behavior structurally.
+
+### Q3 — what does `startDMAEngine` actually program?
+
+**Resolved.** `AppleGFXHDAEngine::startDMAEngine` (entry `0x1e8fc`,
+160 bytes) does *not* touch hardware registers directly. Disassembly
+summary:
+
+```c
+int AppleGFXHDAEngine::startDMAEngine(bool param)
+{
+    // emit kdebug trace
+    os_log("Calling startDMAEngine from %s", this->[0x33c]);
+
+    // (1) guards
+    if (this->[0x128] == NULL) return error_5ea;   // controller pointer
+    if (this->[0x2f4] == 0)    return error_5eb;   // streamId
+
+    // (2) seed initial sample position
+    uint32_t localPos = 0;
+    int err = this->[0x120]->vtable_0x180(&localPos);  // getLinkPositionFromSDLPIB
+    if (err) return err;
+
+    // (3) delegate to the controller
+    err = this->controller->startStream(this->streamInfo, &localPos);
+    if (err) return err;
+
+    // (4) optional secondary-stream arm for DP fan-out
+    if (this->[0x138] != NULL && !already_armed) {
+        err = this->[0x138]->vtable_0x1f8(this->[0x184]);
+        if (err) return err;
+        this->[0x2f2] = 1;  // mark armed
+    }
+    return 0;
+}
+```
+
+All register programming is inside `controller->startStream()`, which
+we already analyzed in §4. The new finding here is the DP fan-out
+arm at step (4): for DP audio with multiple streams sharing a single
+codec, Apple arms a "secondary" stream alongside the primary. We
+don't implement that — DP multi-stream is out of scope for the
+current bug.
+
+**Implication for our patch**: nothing additional to implement. The
+register sequence Apple uses is exactly what we documented in §4 and
+§5.
+
+## 13. New finding from the call-offset dump
+
+`AppleGFXHDAController::startStream` calls
+`AppleGFXHDAController::enableMaxBusStall` (`vtable+0xc00`) immediately
+before issuing `resetStream / programStream`. The implementation
+(entry `0x9614`) is a refcounted wrapper around
+`IOService::requireMaxBusStall(N)` — the kernel API that constrains
+the system PM from entering sleep states that would stall the PCI
+bus longer than `N` nanoseconds. The matched call on the stop side
+is `disableMaxBusStall` (`vtable+0xc08`).
+
+For audio streaming this is a hard correctness requirement: a deep
+PM state mid-clip would starve the HDA DMA controller and cause
+underruns / crackle independent of any of the issues we've already
+addressed. **We don't currently set a bus-stall limit on stream
+start.**
+
+This is a candidate for a follow-up patch (call it D8). It is *not*
+included in commit 80eed10 because it's a new finding from the
+call-offset dump rather than something the original §10 deviation
+table flagged. Adding it requires:
+
+  1. Holding a `requireMaxBusStall(N)` reservation across the
+     lifetime of any running stream (refcounted across multiple
+     engines).
+  2. Picking `N` — Apple's default looks like a low microsecond
+     value derived from `setRequireMaxBusStall` (entry `0x93ee`),
+     which sets up the controller's stored limit from a property
+     read of the matching IOService.
+
+Severity is unclear without measurement. If you're not seeing wake-
+from-deep-sleep audio glitches today, this isn't urgent.
+
+## 14. References — updated
 
 - `docs/audio_stack_decompiled/AppleGFXHDA_decompiled.c` — raw decompile
 - `docs/audio_stack_decompiled/IOAudioFamily_decompiled.c` — IOAudio base
 - `/tmp/apple_decompile/apple_vtables.txt` — full vtable dump (200 classes)
+- `/tmp/apple_decompile/apple_call_offsets.txt` — disassembly with MMIO
+  offsets surrounding each register-wrapper call (used to resolve Q1)
 - `/tmp/apple_decompile/AppleGFXHDA_resolved.c` — decompile with vtable
   calls annotated with resolved method names
-- `tools/dump_vtables_jython.py` — Ghidra headless vtable extractor
-- `tools/resolve_vtables.py` — local post-processor (Itanium-ABI corrected)
+- `tools/ghidra/dump_vtables.py` — Ghidra headless vtable extractor
+- `tools/ghidra/dump_call_offsets.py` — Ghidra headless caller-context
+  extractor (captures the MMIO offset values in `ESI` immediately
+  before each register-wrapper call)
+- `tools/ghidra/resolve_vtables.py` — local post-processor (Itanium-ABI
+  corrected, +0x10 from `__ZTV<class>` to vtable[0])
 - HDA 1.0a specification — register semantics ground truth
 - Apple KDK 26.3, `System/Library/Extensions/AppleGFXHDA.kext`
+
+## 13. (superseded by §14)
