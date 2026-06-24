@@ -931,15 +931,33 @@ bool VoodooHDADevice::createAudioEngine(Channel *channel)
       slot->activated = false;
       audioEngine->retain(); /* keep alive past RELEASE below */
 
-      /* Always activate HDMI engines at init — presence is unknown at
-       * this point (unsolicited responses arrive later).  Dynamic
-       * deactivation on hot-unplug will hide unused engines. */
-      if (activateAudioEngine(audioEngine) == kIOReturnSuccess) {
-        slot->activated = true;
-        result = true;
+      /* HDMI presence-gated activation, mirroring CloverHackyColor 4.0.1
+       * (sergey.slice signed-off, 2026-06-15 paranoic-checks commit
+       * 407f8f23):
+       *
+       *  - ATI/AMD HDMI codecs report stale/cached ELD on EVERY pin during
+       *    boot, so a per-channel activation here would publish 5-6
+       *    "phantom" HDMI outputs to CoreAudio every boot — which is the
+       *    visible UI bug ("Список устройств HDMI показывает всё").
+       *    Defer activation entirely for ATI; the FB notifier's
+       *    updateHDMIEnginePresence() runs later (when ELD/presence is
+       *    actually known) and publishes only the connected pin(s).
+       *
+       *  - Non-ATI HDMI: activate only if presence is genuine RIGHT NOW.
+       *    Future hot-plug events trigger updateHDMIEnginePresence() to
+       *    upgrade the slot to activated=true.
+       *
+       *  - In both cases the slot is retained so updateHDMIEnginePresence
+       *    can find and activate it later.  result = true so the parent
+       *    init loop continues. */
+      result = true;
+      if (!isAtiHdmiCodec(codec) && hasPresence) {
+        if (activateAudioEngine(audioEngine) == kIOReturnSuccess)
+          slot->activated = true;
       }
-      IOLog("VoodooHDA DBG: HDMI engine pin=%d presence=%d activated=%d\n",
-            hdmiPin, hasPresence, slot->activated);
+      IOLog("VoodooHDA DBG: HDMI engine pin=%d presence=%d activated=%d%s\n",
+            hdmiPin, hasPresence, slot->activated,
+            slot->activated ? "" : " (deferred — connected-only policy)");
     } else {
       /* Non-HDMI: always activate */
       if (activateAudioEngine(audioEngine) != kIOReturnSuccess) {
