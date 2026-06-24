@@ -575,28 +575,29 @@ bool VoodooHDAFramebufferNotifier::readEDID(FBConnectionState *conn)
 	}
 
 	/*
-	 * IODisplayEDID lives on the IODisplay child, not on the IOFramebuffer itself.
-	 * IOKit tree: IOFramebuffer -> IODisplayConnect -> IODisplay (has IODisplayEDID).
-	 * Search up to 2 levels deep without requiring IOGraphicsFamily headers.
+	 * IODisplayEDID lives on the IODisplay child, which sits at a variable
+	 * depth in the IOKit tree depending on the GPU/framebuffer stack:
+	 *   IOFramebuffer → IODisplayConnect → IODisplay                  (depth 2)
+	 *   IOFramebuffer → IODisplayConnect → IOAccelDisplayPipe* → IODisplay (depth 3)
+	 *   …or deeper on some AMD/NVIDIA stacks
+	 *
+	 * Previous implementation only searched depth ≤ 2 — Slice (Tahoe + Polaris)
+	 * reports the EDID node is at depth 3 on his stack, so the old code missed
+	 * it entirely and we fell back to a stub ELD.  Use IORegistryIterator with
+	 * kIORegistryIterateRecursively to traverse the whole subtree below the
+	 * framebuffer; bounded by an explicit max-iterations cap as a safety net.
 	 */
 	OSData *edidProp = OSDynamicCast(OSData, conn->framebuffer->getProperty(kIODisplayEDIDKey));
 
 	if (!edidProp) {
-		OSIterator *iter = conn->framebuffer->getChildIterator(gIOServicePlane);
+		IORegistryIterator *iter = IORegistryIterator::iterateOver(
+			conn->framebuffer, gIOServicePlane, kIORegistryIterateRecursively);
 		if (iter) {
-			IOService *child;
-			while (!edidProp && (child = OSDynamicCast(IOService, iter->getNextObject()))) {
-				edidProp = OSDynamicCast(OSData, child->getProperty(kIODisplayEDIDKey));
-				if (!edidProp) {
-					/* IODisplayConnect -> IODisplay */
-					OSIterator *iter2 = child->getChildIterator(gIOServicePlane);
-					if (iter2) {
-						IOService *grandChild;
-						while (!edidProp && (grandChild = OSDynamicCast(IOService, iter2->getNextObject())))
-							edidProp = OSDynamicCast(OSData, grandChild->getProperty(kIODisplayEDIDKey));
-						iter2->release();
-					}
-				}
+			IORegistryEntry *entry;
+			int safety = 256;
+			while (!edidProp && safety-- > 0 &&
+			       (entry = iter->getNextObject()) != NULL) {
+				edidProp = OSDynamicCast(OSData, entry->getProperty(kIODisplayEDIDKey));
 			}
 			iter->release();
 		}

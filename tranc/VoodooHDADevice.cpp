@@ -2425,9 +2425,29 @@ void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag, UInt32 resp)
 			hdaa_eld_handler(src);
 			updateHDMIEnginePresence();
 		} else {
-			/* Analog jack: presence change → HP redirect path. */
-			if (flags & 0x01)
-				switchHandler(funcGroup, false);
+			/* Analog jack: ALWAYS dispatch switchHandler — matches
+			 * AppleHDADriver::handleUnsolicitedResponsePinSenseCacheSupport
+			 * (decompile @ 0x1829e) which calls the real handler
+			 * (vtable+0xb70 = handleUnsolicitedResponse) unconditionally
+			 * regardless of resp's flag bits, and matches the 3.0.5
+			 * `traditional` behavior that worked.
+			 *
+			 * The previous `if (flags & 0x01)` gate was a 3.3.5 regression:
+			 * some codecs generate analog-pin unsol events without
+			 * bit 0 (presence-change) set — e.g. as a side effect of
+			 * SET_PIN_WIDGET_CTRL or SET_CONV_STREAM_CHAN issued during
+			 * output switching via the System Settings UI.  With the gate,
+			 * those events were silently dropped; the pin-sense / mute
+			 * state never got recomputed; after the second UI switch (e.g.
+			 * Speakers → Headphones → Speakers) the codec state was stuck
+			 * in stale mutes, killing audio on every output until reboot
+			 * ("ДНД bug" reported by Slice on RX570/Tahoe Hackintosh).
+			 *
+			 * switchHandler is idempotent: it always re-reads PIN_SENSE
+			 * via verb and rewrites the muter/pin.ctrl state from that.
+			 * Calling it more often than needed is a no-op; calling it
+			 * less than needed silently corrupts routing. */
+			switchHandler(funcGroup, false);
 		}
 		return;
 	}
