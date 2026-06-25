@@ -147,6 +147,13 @@ public:
 	UInt64 mTotalInt;
 	UInt64 mTotalChanInt;
 	UInt64 mIntrTimeStamp;
+	/* Dirty-jack / EMI debounce counters.  mRirbOverrunCount bumps when
+	 * the controller asserts HDAC_RIRBSTS_RIRBOIS (couldn't drain ring
+	 * before it wrapped); mUnsolqDroppedCount bumps when our software
+	 * unsol ring would clobber an unread entry (worn audio jack
+	 * contact bouncing is the typical trigger). */
+	UInt32 mRirbOverrunCount;
+	UInt32 mUnsolqDroppedCount;
 
 	UInt32 mVerbose;
 	//Temporary for init driver

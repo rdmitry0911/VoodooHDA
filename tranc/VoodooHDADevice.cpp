@@ -62,6 +62,8 @@ bool VoodooHDADevice::init(OSDictionary *dict)
 	mGFXController = NULL;
 	mNumHDMIEngines = 0;
 	bzero(mHDMIEngines, sizeof(mHDMIEngines));
+	mRirbOverrunCount = 0;
+	mUnsolqDroppedCount = 0;
 
 	/* Diag-mode state */
 	mDiagLock = NULL;
@@ -2213,11 +2215,27 @@ int VoodooHDADevice::rirbFlush()
 		if (rirb->response_ex & HDAC_RIRB_RESPONSE_EX_UNSOLICITED) {
 			/* Store both the tag (bits [31:26]) and the full response
 			 * so HDMI/DP flag bits [1:0] are available to handleUnsolicited().
-			 * Queue format: even slot = (cad << 16) | tag, odd slot = resp */
-			mUnsolq[mUnsolqWritePtr++] = (cad << 16) | ((resp >> 26) & 0xffff);
-			mUnsolqWritePtr %= HDAC_UNSOLQ_MAX;
-			mUnsolq[mUnsolqWritePtr++] = resp;
-			mUnsolqWritePtr %= HDAC_UNSOLQ_MAX;
+			 * Queue format: even slot = (cad << 16) | tag, odd slot = resp.
+			 *
+			 * Dirty-jack debounce: protect against the ring catching its
+			 * tail when a worn jack contact generates dozens of unsol
+			 * events per second.  Each event occupies TWO slots; if we
+			 * would clobber an unread pair we drop this event and bump
+			 * a diagnostic counter rather than corrupting the ring. */
+			UInt32 nextWP1 = (mUnsolqWritePtr + 1) % HDAC_UNSOLQ_MAX;
+			UInt32 nextWP2 = (mUnsolqWritePtr + 2) % HDAC_UNSOLQ_MAX;
+			if (nextWP1 == mUnsolqReadPtr || nextWP2 == mUnsolqReadPtr) {
+				mUnsolqDroppedCount++;
+				if ((mUnsolqDroppedCount & 0xFF) == 1)
+					IOLog("VoodooHDA WARN: unsol ring full, dropping events (count=%u). "
+					      "Likely dirty-jack contact bounce.\n",
+					      (unsigned)mUnsolqDroppedCount);
+			} else {
+				mUnsolq[mUnsolqWritePtr++] = (cad << 16) | ((resp >> 26) & 0xffff);
+				mUnsolqWritePtr %= HDAC_UNSOLQ_MAX;
+				mUnsolq[mUnsolqWritePtr++] = resp;
+				mUnsolqWritePtr %= HDAC_UNSOLQ_MAX;
+			}
 		} else if (commands && (commands->numCommands > 0) &&
 				(codec->numRespReceived < commands->numCommands))
 			commands->responses[codec->numRespReceived++] = resp;
@@ -2471,39 +2489,37 @@ void VoodooHDADevice::handleUnsolicited(Codec *codec, UInt32 tag, UInt32 resp)
 	}
 
 	/* Tag == 0 fallback (legacy path / pre-init events / external
-	 * codecs that didn't get our per-pin tag programming). */
-	{
-		int legacyFlags = 0x01; /* default: presence only */
-		/* If any HDMI/DP pin exists in this group, extract both flags */
+	 * codecs that didn't get our per-pin tag programming).
+	 *
+	 * The previous version of this block coupled the analog-flow
+	 * dispatch to the HDMI-flag interpretation: it scanned the
+	 * function group for any HDMI/DP pin and, if found, re-read
+	 * `resp & 0x03` and used that as a presence-bit gate even for
+	 * analog jack events.  Slice (SergeySlice) flagged this as
+	 * wrong: an analog-jack event should never have its dispatch
+	 * gated on whether the codec also happens to have HDMI pins.
+	 *
+	 * The analog and HDMI flows are now independent:
+	 *   - Analog: always run switchHandler (idempotent re-scan,
+	 *     same as 3.0.5 traditional).
+	 *   - HDMI: refresh ELD on every HDMI/DP pin in this codec's
+	 *     funcGroup IF the response carries the ELD-valid bit
+	 *     (resp & 0x02).  Pure-analog codecs have no HDMI pins so
+	 *     this loop is a no-op for them. */
+	IOLog("VoodooHDA DBG: unsol tag=0 resp=0x%08x (scan-all, analog+HDMI independent)\n",
+	      (unsigned)resp);
+
+	switchHandler(funcGroup, false);
+	updateHDMIEnginePresence();
+
+	if (resp & 0x02) {
 		for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
 			Widget *w = widgetGet(funcGroup, j);
 			if (!w || w->enable == 0 ||
 			    w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
 				continue;
-			if (HDA_PARAM_PIN_CAP_DP(w->pin.cap) || HDA_PARAM_PIN_CAP_HDMI(w->pin.cap)) {
-				legacyFlags = resp & 0x03;
-				break;
-			}
-		}
-
-		IOLog("VoodooHDA DBG: unsol tag=0 resp=0x%08x flags=0x%x (scan-all)\n",
-		      (unsigned)resp, (unsigned)legacyFlags);
-
-		if (legacyFlags & 0x01) {
-			switchHandler(funcGroup, false);
-			updateHDMIEnginePresence();
-		}
-
-		if (legacyFlags & 0x02) {
-			for (int j = funcGroup->startNode; j < funcGroup->endNode; j++) {
-				Widget *w = widgetGet(funcGroup, j);
-				if (!w || w->enable == 0 ||
-				    w->type != HDA_PARAM_AUDIO_WIDGET_CAP_TYPE_PIN_COMPLEX)
-					continue;
-				if (!HDA_PARAM_PIN_CAP_DP(w->pin.cap) && !HDA_PARAM_PIN_CAP_HDMI(w->pin.cap))
-					continue;
+			if (HDA_PARAM_PIN_CAP_DP(w->pin.cap) || HDA_PARAM_PIN_CAP_HDMI(w->pin.cap))
 				hdaa_eld_handler(w);
-			}
 		}
 	}
 }
@@ -2591,6 +2607,22 @@ void VoodooHDADevice::handleInterrupt()
 		/* Was this a controller interrupt? */
 		if (HDA_FLAG_MATCH(status, HDAC_INTSTS_CIS)) {
 			UInt8 rirbStatus = readData8(HDAC_RIRBSTS);
+
+			/* RIRB overrun detection (RIRBOIS bit). If the controller
+			 * wrote responses faster than we drained the ring, log
+			 * and W1C — subsequent commands may have lost their
+			 * responses but at least we won't keep ignoring the
+			 * overrun signal. Typical cause: unsol storm from a worn
+			 * jack contact ("dirty jack" debounce class). */
+			if (rirbStatus & HDAC_RIRBSTS_RIRBOIS) {
+				mRirbOverrunCount++;
+				if ((mRirbOverrunCount & 0x3F) == 1)
+					IOLog("VoodooHDA WARN: RIRB overrun (count=%u). Codec responses may be lost. "
+					      "Check for unsol storms (dirty jack contact, EMI).\n",
+					      (unsigned)mRirbOverrunCount);
+				writeData8(HDAC_RIRBSTS, HDAC_RIRBSTS_RIRBOIS);
+			}
+
 			/* Get as many responses that we can */
 			while (HDA_FLAG_MATCH(rirbStatus, HDAC_RIRBSTS_RINTFL)) {
 				writeData8(HDAC_RIRBSTS, HDAC_RIRBSTS_RINTFL);
@@ -3077,10 +3109,14 @@ void VoodooHDADevice::channelStop(Channel *channel, const bool shouldLock)
 	if (mGFXController)
 		mGFXController->updateTiming(channel, false, false);
 
-	if (channel->pcmDevice && channel->pcmDevice->digital >= 2) {
-		nid_t pin = getHDMIPinForChannel(channel);
-		IOLog("VoodooHDA DBG: channelStop HDMI pin=%d streamId=%d\n",
-		      pin, channel->streamId);
+	{
+		const char *kind = (channel->pcmDevice && channel->pcmDevice->digital >= 2) ? "HDMI" :
+		                   (channel->pcmDevice && channel->pcmDevice->digital ? "SPDIF" : "analog");
+		nid_t pin = (channel->pcmDevice && channel->pcmDevice->digital >= 2)
+				? getHDMIPinForChannel(channel) : (nid_t)-1;
+		IOLog("VoodooHDA DBG: channelStop %s pin=%d streamId=%d dir=%d assoc=%d\n",
+		      kind, pin, channel->streamId,
+		      channel->direction, channel->assocNum);
 		if (pin != (nid_t)-1 && mFBNotifier)
 			mFBNotifier->notifyStreamingState(cad, pin, false);
 	}
@@ -3115,10 +3151,14 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 	if (shouldLock)
 		LOCK();
 
-	if (channel->pcmDevice && channel->pcmDevice->digital >= 2) {
-		nid_t pin = getHDMIPinForChannel(channel);
-		IOLog("VoodooHDA DBG: channelStart HDMI pin=%d streamId=%d speed=%d\n",
-		      pin, channel->streamId, (int)channel->speed);
+	{
+		const char *kind = (channel->pcmDevice && channel->pcmDevice->digital >= 2) ? "HDMI" :
+		                   (channel->pcmDevice && channel->pcmDevice->digital ? "SPDIF" : "analog");
+		nid_t pin = (channel->pcmDevice && channel->pcmDevice->digital >= 2)
+				? getHDMIPinForChannel(channel) : (nid_t)-1;
+		IOLog("VoodooHDA DBG: channelStart %s pin=%d streamId=%d speed=%d dir=%d assoc=%d\n",
+		      kind, pin, channel->streamId, (int)channel->speed,
+		      channel->direction, channel->assocNum);
 	}
 
 	if (mGFXController && mGFXController->ownsChannel(channel))
