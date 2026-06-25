@@ -3162,50 +3162,20 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 	}
 
 	/*
-	 * Apple-style per-path activation for the analog playback path.
+	 * ДНД-bug revert experiment (2026-06-25, Slice's request).
 	 *
-	 * Bug nature
-	 * ----------
-	 * The "ДНД" bug (Speakers → Headphones → Speakers → silence) is a
-	 * structural mismatch between our model and Apple's:
+	 * Pin/amp re-assertion was added in 309e0e5 (this commit) as a
+	 * channel-start per-path activation. It mirrors at engine-start
+	 * time what ed0c265 does at codec init: an extra
+	 * SET_PIN_WIDGET_CTRL + SET_AMP_GAIN_MUTE verb that vanilla 3.0.5
+	 * never sends. We're disabling BOTH for the experiment.
 	 *
-	 *   Apple AppleHDA: per-path engines.  Every engine activation
-	 *     invokes AppleHDAPath::switchToPath which idempotently sets
-	 *     pin state for THIS path (enable its pin, unmute its amp).
-	 *     Other paths' pins are owned by other engines, untouched.
-	 *
-	 *   Our 3.0.5 and 3.3.5: pin state is owned exclusively by
-	 *     hpSwitchHandler, which only runs on jack-sense unsol.
-	 *     macOS UI output switching never fires unsol, so a pin
-	 *     muted by hpSwitchHandler at boot stays muted across UI
-	 *     switches — silent path.
-	 *
-	 * Latent since 3.0.5 (hpSwitchHandler is byte-identical); the
-	 * bug just wasn't reproduced earlier.  On Tahoe IOAudio routing
-	 * stopped incidentally re-programming pin state during engine
-	 * restart, exposing the structural gap.
-	 *
-	 * Apple-aligned fix
-	 * -----------------
-	 * Mirror Apple's path activation: when an analog playback
-	 * engine starts, idempotently re-assert pin/amp state for
-	 * THIS engine's target pin only — not all pins in the
-	 * association (which is what Slice's CHC 3.5.0 b7829d0 did,
-	 * and what defeats jack-sense auto-mute on hpredir-merged
-	 * associations).
-	 *
-	 *   - assoc.hpredir < 0  → single-pin association.  The pin in
-	 *     this association IS this engine's target.  Re-enable it.
-	 *
-	 *   - assoc.hpredir >= 0 → hpredir-merged association.  Multiple
-	 *     pins, jack-sense decides which one routes.  Skip — let
-	 *     hpSwitchHandler do its job.  Overriding here would
-	 *     undo jack-sense auto-mute.
-	 *
-	 * Scope intentionally limited to PCMDIR_PLAY analog channels.
-	 * HDMI/DP pin lifecycle is managed by VoodooGFXHDA and the FB
-	 * notifier (updateHDMIEnginePresence), not by this path.
+	 * If Slice's ДНД disappears after this revert, the unmute logic
+	 * is the regression source. Then we'll redesign it Apple-aligned
+	 * with an explicit channel→pin mapping rather than blanket
+	 * "enable all pins in assoc" or "unmute all disabled output amps".
 	 */
+#if 0
 	if (channel->direction == PCMDIR_PLAY &&
 	    !(channel->pcmDevice && channel->pcmDevice->digital >= 2)) {
 		FunctionGroup *funcGroup = channel->funcGroup;
@@ -3248,6 +3218,7 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 			/* assoc.hpredir >= 0: leave to hpSwitchHandler. */
 		}
 	}
+#endif
 
 	if (mGFXController && mGFXController->ownsChannel(channel))
 		mGFXController->prepareStreamDMA(channel);
