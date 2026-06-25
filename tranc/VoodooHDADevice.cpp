@@ -3161,6 +3161,94 @@ void VoodooHDADevice::channelStart(Channel *channel, const bool shouldLock)
 		      channel->direction, channel->assocNum);
 	}
 
+	/*
+	 * Apple-style per-path activation for the analog playback path.
+	 *
+	 * Bug nature
+	 * ----------
+	 * The "ДНД" bug (Speakers → Headphones → Speakers → silence) is a
+	 * structural mismatch between our model and Apple's:
+	 *
+	 *   Apple AppleHDA: per-path engines.  Every engine activation
+	 *     invokes AppleHDAPath::switchToPath which idempotently sets
+	 *     pin state for THIS path (enable its pin, unmute its amp).
+	 *     Other paths' pins are owned by other engines, untouched.
+	 *
+	 *   Our 3.0.5 and 3.3.5: pin state is owned exclusively by
+	 *     hpSwitchHandler, which only runs on jack-sense unsol.
+	 *     macOS UI output switching never fires unsol, so a pin
+	 *     muted by hpSwitchHandler at boot stays muted across UI
+	 *     switches — silent path.
+	 *
+	 * Latent since 3.0.5 (hpSwitchHandler is byte-identical); the
+	 * bug just wasn't reproduced earlier.  On Tahoe IOAudio routing
+	 * stopped incidentally re-programming pin state during engine
+	 * restart, exposing the structural gap.
+	 *
+	 * Apple-aligned fix
+	 * -----------------
+	 * Mirror Apple's path activation: when an analog playback
+	 * engine starts, idempotently re-assert pin/amp state for
+	 * THIS engine's target pin only — not all pins in the
+	 * association (which is what Slice's CHC 3.5.0 b7829d0 did,
+	 * and what defeats jack-sense auto-mute on hpredir-merged
+	 * associations).
+	 *
+	 *   - assoc.hpredir < 0  → single-pin association.  The pin in
+	 *     this association IS this engine's target.  Re-enable it.
+	 *
+	 *   - assoc.hpredir >= 0 → hpredir-merged association.  Multiple
+	 *     pins, jack-sense decides which one routes.  Skip — let
+	 *     hpSwitchHandler do its job.  Overriding here would
+	 *     undo jack-sense auto-mute.
+	 *
+	 * Scope intentionally limited to PCMDIR_PLAY analog channels.
+	 * HDMI/DP pin lifecycle is managed by VoodooGFXHDA and the FB
+	 * notifier (updateHDMIEnginePresence), not by this path.
+	 */
+	if (channel->direction == PCMDIR_PLAY &&
+	    !(channel->pcmDevice && channel->pcmDevice->digital >= 2)) {
+		FunctionGroup *funcGroup = channel->funcGroup;
+		if (funcGroup && funcGroup->codec &&
+		    channel->assocNum >= 0 &&
+		    channel->assocNum < funcGroup->audio.numAssocs) {
+			AudioAssoc *assoc = &funcGroup->audio.assocs[channel->assocNum];
+			if (assoc->hpredir < 0) {
+				nid_t cad = funcGroup->codec->cad;
+				for (int seq = 0; seq < 16; seq++) {
+					nid_t pinNid = assoc->pins[seq];
+					if (pinNid <= 0)
+						continue;
+					Widget *pinWidget = widgetGet(funcGroup, pinNid);
+					if (!pinWidget || pinWidget->enable == 0)
+						continue;
+
+					UInt32 pincap = pinWidget->pin.cap;
+					UInt32 ctrl = pinWidget->pin.ctrl;
+					if (HDA_PARAM_PIN_CAP_OUTPUT_CAP(pincap))
+						ctrl |= HDA_CMD_SET_PIN_WIDGET_CTRL_OUT_ENABLE;
+					if (HDA_PARAM_PIN_CAP_HEADPHONE_CAP(pincap) &&
+					    ((pinWidget->pin.config & HDA_CONFIG_DEFAULTCONF_DEVICE_MASK)
+					         == HDA_CONFIG_DEFAULTCONF_DEVICE_HP_OUT))
+						ctrl |= HDA_CMD_SET_PIN_WIDGET_CTRL_HPHN_ENABLE;
+					if (ctrl != pinWidget->pin.ctrl) {
+						pinWidget->pin.ctrl = ctrl;
+						sendCommand(HDA_CMD_SET_PIN_WIDGET_CTRL(cad, pinNid, ctrl), cad);
+					}
+
+					AudioControl *ctl = audioCtlAmpGet(funcGroup, pinNid, HDA_CTL_OUT, -1, 1);
+					if (ctl) {
+						int z = ctl->offset;
+						if (z > ctl->step)
+							z = ctl->step;
+						audioCtlAmpSetInternal(cad, pinNid, ctl->index, 0, 0, z, z, 0);
+					}
+				}
+			}
+			/* assoc.hpredir >= 0: leave to hpSwitchHandler. */
+		}
+	}
+
 	if (mGFXController && mGFXController->ownsChannel(channel))
 		mGFXController->prepareStreamDMA(channel);
 	else {
