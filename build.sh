@@ -1,4 +1,9 @@
 #!/bin/sh
+# IMPORTANT: this script uses tranc/VoodooHDA.xcodeproj (NOT _BS variant).
+# VoodooHDA_BS.xcodeproj is MISSING VoodooGFXHDA.cpp and VoodooHDAFramebufferNotifier.cpp
+# in its Sources build phase — kexts built from it fail to load due to
+# undefined symbols (VoodooGFXHDAStream::* etc.).  Do not use it for releases.
+#
 # Build VoodooHDA.kext into ./build/.
 #
 # Usage:
