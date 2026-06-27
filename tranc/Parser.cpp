@@ -2481,26 +2481,6 @@ void VoodooHDADevice::audioCommit(FunctionGroup *funcGroup)
 	/* Commit controls. */
 	audioCtlCommit(funcGroup);
 
-	/* ДНД-bug revert experiment (2026-06-25, Slice's request).
-	 *
-	 * The block below was added in commit ed0c265 (Mar 29, 2026) —
-	 * unmute disabled output amps on HP/Speaker/Line-out pins so
-	 * audioDisableUnassociated's forcemute=1 wouldn't permanently
-	 * silence those pins on some Realtek codecs (Dima's ALC256 setup).
-	 *
-	 * Slice (SergeySlice) reports that 3.0.5 (which lacks this block)
-	 * does NOT exhibit the ДНД switching bug, and identifies our
-	 * extra SET_AMP_GAIN_MUTE verb as the regression trigger:
-	 * "проблема в неправильном использовании verb'ов".  This is the
-	 * only verb-level addition in the analog switching path between
-	 * 3.0.5 (chc/traditional = eedae3e) and 3.3.5 — full audit in
-	 * docs/applehda_unsol_invariant.md.
-	 *
-	 * Disable the block to test the hypothesis.  If Slice's ДНД
-	 * disappears, this is the culprit; we'll then redesign it
-	 * Apple-aligned (per-path activation at engine start with
-	 * channel→pin mapping, not blanket init-time unmute). */
-#if 0
 	/* Unmute output amps on output pins.  audioCtlCommit mutes disabled
 	 * controls, but output pin amps must always pass audio — switching
 	 * is handled by input amps and pin ctrl only.  Use audioCtlAmpSetInternal
@@ -2523,7 +2503,6 @@ void VoodooHDADevice::audioCommit(FunctionGroup *funcGroup)
 			dumpMsg("Unmuted output amp on pin nid=%d to 0dB\n", w->nid);
 		}
 	}
-#endif
 
 	/* Commit selectors, pins and EAPD. */
 	for (int i = 0; i < funcGroup->numNodes; i++) {
